@@ -1,0 +1,7 @@
+output/
+output_*/
+replays/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.log
