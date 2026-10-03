@@ -33,7 +33,7 @@ tests/             hand-built game states with known outcomes, checked by execut
 
 ```bash
 pip install -r requirements.txt
-python -m pytest -q                       # 63 tests: rules, observations, trainer, PBT
+python -m pytest -q                       # 66 tests: rules, observations, trainer, PBT
 python render.py --a split --b heuristic --gif replays/bots.gif
 python train.py --label try --team-size 2 --samples 3e5 --train num_envs=64 rollout_len=32 minibatch=8192
 ```
@@ -62,7 +62,7 @@ SAMPLES=2e9 bash experiments/run_all.sh   # baseline, main, 4 ablations, final e
 | Explosions | every crash (including head-ons) destroys all trail cells within 2 cells of the crash point, opening holes in walls; the rim is never broken |
 | Humanlike limits | the policy sees the game 2 decisions late (`reaction_delay`); optional `turn_cooldown` between turns (off by default) |
 | Trails | each cell lasts `trail_ticks` (200); a dead cycle's trail vanishes 30 ticks after death |
-| Fortress | each team has a circular zone. Enemies inside conquer it (+0.015/step each), defenders inside push back (-0.02/step each), it decays when no enemy is in it |
+| Fortress | each team has a circular zone. If attackers outnumber defenders inside it, it is captured at 1/30 per step per extra attacker (one undefended attacker: 30 steps ~ 3 s); with equal numbers or no attackers it drains (empty from full in ~1.5 s). Time scale: 1 decision ~ 0.1 s |
 | Winning | conquer the enemy zone or eliminate every enemy cycle; 500 decisions = draw |
 
 ### Simplifications vs real Retrocycles
@@ -110,5 +110,5 @@ Outcome/mechanics: `result`, `end_reason`, `round_steps`, `kills`, `deaths_*`, `
 `avg_speed`, `wall_ride_frac`, `max_enemy_progress`. Definitions are in `tron/metrics.py`.
 
 Reference point: a hand-coded team that splits roles (`split`) beats an all-attack
-heuristic team ~90% of the time. That shows division of labour pays off in this game,
+heuristic team ~98% of the time, every win by conquest. That shows division of labour pays off in this game,
 so it is something a learning team has a reason to discover.

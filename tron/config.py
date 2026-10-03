@@ -21,9 +21,9 @@ Rules modelled (Retrocycles / Armagetron "Fortress", simplified to a grid):
   the wall that was hit. The rim is indestructible.
 - Trails are finite: a trail cell disappears ``trail_ticks`` after it was laid.
   A dead cycle's whole trail disappears ``dead_wall_ticks`` after it died.
-- Each team owns a circular base zone. Enemy cycles inside it build conquest
-  progress, defenders inside it reduce it, and it decays when no enemy is in
-  it. A team loses when its zone reaches progress 1.0 or when all of its
+- Each team owns a circular base zone. If more enemies than defenders are inside
+  it, progress grows by ``conquest_rate`` per extra attacker per step; with
+  equal numbers (or no attackers) it does not grow and drains by ``conquest_decay``. A team loses when its zone reaches progress 1.0 or when all of its
   cycles are dead. Hitting ``max_steps`` is a draw.
 
 Humanlike limits:
@@ -42,7 +42,8 @@ SPEED_UNIT = 100  # movement credit needed to advance one cell
 @dataclass
 class FortressConfig:
     team_size: int = 7
-    arena_size: int = 0          # interior side length in cells; 0 = auto (29 + 6*team_size, odd)
+    arena_size: int = 0          # interior side length in cells; 0 = auto (35 + 10*team_size, odd).
+                                 # 7v7 -> 105: ~60 decisions (~6 s) from spawn to the enemy zone
     ticks_per_step: int = 2
 
     base_speed: int = 50         # 1/100 cell per tick
@@ -55,10 +56,12 @@ class FortressConfig:
     explosion_radius: float = 2.0  # every crash removes all trail cells within this many cells
                                    # of the crash point (never the rim); 0 = no explosions
 
-    zone_radius: float = 0.0     # 0 = auto (12% of arena, min 3)
-    conquest_rate: float = 0.015  # progress per step per attacker in the zone
-    defend_rate: float = 0.02     # progress removed per step per defender in the zone
-    conquest_decay: float = 0.01  # progress removed per step when no attacker is in the zone
+    zone_radius: float = 0.0     # 0 = auto (8.5% of arena, min 3)
+    # Time scale: 1 decision ~= 0.1 s (so reaction_delay=2 ~= 200 ms human reaction time).
+    conquest_rate: float = 1 / 30   # progress per step per attacker IN EXCESS of the defenders:
+                                    # one undefended attacker captures in 30 steps (~3 s)
+    conquest_decay: float = 1 / 15  # progress drained per step when attackers <= defenders
+                                    # (incl. nobody there): full -> empty in ~1.5 s
 
     breach_window_ticks: int = 60  # measurement only: a hole counts as "used" if a cycle drives
                                    # into it within this many ticks of the explosion
@@ -74,9 +77,9 @@ class FortressConfig:
 
     def __post_init__(self):
         if self.arena_size <= 0:
-            self.arena_size = 29 + 6 * self.team_size
+            self.arena_size = 35 + 10 * self.team_size
         if self.zone_radius <= 0:
-            self.zone_radius = max(3.0, round(0.12 * self.arena_size, 1))
+            self.zone_radius = max(3.0, round(0.085 * self.arena_size, 1))
         assert self.team_size >= 1
         assert self.arena_size % 2 == 1, "arena_size must be odd so the map is exactly symmetric"
         assert 0 <= self.explosion_radius < self.pad, "explosion must fit inside the rim padding"

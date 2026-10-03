@@ -45,8 +45,9 @@ Everything lives under `$OUT` (default `output/`, `/workspace/retrocycles_output
 **Mechanics / debugging:** `kills`, `deaths_self` / `deaths_enemy` / `deaths_rim` / `deaths_headon`, `survival`,
 `avg_speed` (cells/decision), `wall_ride_frac`, `turn_rate`, `turns_blocked`.
 
-Reference values (scripted bots, 7v7): split-role bot `role_entropy` ≈ 0.57, `role_specialization` ≈ 0.40,
-`undefended_rate` ≈ 0.34; all-attack heuristic ≈ 0.15 / 0.09 / 0.98. Hole use by bots: 2-7% of breaches.
+Reference values (scripted bots, 7v7, 128 rounds): split-role bot `role_specialization` ≈ 0.32,
+`frac_defending` ≈ 0.18, `undefended_rate` ≈ 0.46, beats the all-attack heuristic 98% (all by conquest);
+the heuristic has `frac_defending` 0 and `undefended_rate` 1.0. `00_baseline.sh` re-measures these.
 
 ## Training log (`logs/<label>_train.csv`): one row per iteration
 

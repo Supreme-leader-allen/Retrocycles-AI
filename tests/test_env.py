@@ -245,7 +245,7 @@ def _zone_cell(env, k):
     return int(round(cy)) - env.P, int(round(cx)) - env.P
 
 
-def test_conquest_rates():
+def test_lone_attacker_captures_at_conquest_rate():
     env = make()
     cfg = env.cfg
     blank(env)
@@ -256,12 +256,49 @@ def test_conquest_rates():
     assert env.progress[0, 0].item() == pytest.approx(cfg.conquest_rate)
     assert env.progress[0, 1].item() == 0.0
 
-    env.place(0, 0, zy + 2, zx - 2, RIGHT)    # defender joins: net change is negative
+
+def test_lone_attacker_needs_exactly_30_steps():
+    env = make()
+    blank(env)
+    zy, zx = _zone_cell(env, 0)
+    env.place(0, 1, zy, zx - 1, RIGHT)
+    env.place(0, 0, 2, 2, RIGHT)
+    p = torch.zeros(())
+    for _ in range(29):                       # float32 sum of 29 x (1/30), as the sim computes it
+        p = p + env.cfg.conquest_rate
+    env.progress[0, 0] = p
+    info = act(env, S_, S_)                   # step 30
+    assert info["done"][0] and int(info["winner"][0]) == 1
+    assert int(info["reason"][0]) == REASON_CONQUEST
+
+
+def test_equal_numbers_do_not_capture_and_drain():
+    env = make()
+    cfg = env.cfg
+    blank(env)
+    zy, zx = _zone_cell(env, 0)
+    env.place(0, 1, zy, zx - 1, RIGHT)        # 1 attacker
+    env.place(0, 0, zy + 2, zx - 2, RIGHT)    # 1 defender
+    env.progress[0, 0] = 0.5
     act(env, S_, S_)
-    assert env.progress[0, 0].item() == pytest.approx(max(0.0, cfg.conquest_rate * 2 - cfg.defend_rate))
+    assert env.progress[0, 0].item() == pytest.approx(0.5 - cfg.conquest_decay)
 
 
-def test_conquest_decay_without_attackers():
+def test_two_attackers_beat_one_defender_at_net_rate():
+    env = make(team_size=2)
+    cfg = env.cfg
+    blank(env)
+    zy, zx = _zone_cell(env, 0)
+    env.place(0, 2, zy, zx - 2, RIGHT)        # attacker -> (zy, zx-1)
+    env.place(0, 3, zy - 1, zx - 1, RIGHT)    # attacker -> (zy-1, zx)
+    env.place(0, 0, zy + 1, zx, LEFT)         # defender -> (zy+1, zx-1)
+    env.place(0, 1, 5, 5, RIGHT)              # other defender far away
+    act(env, S_, S_, S_, S_)
+    assert env.alive[0].all()
+    assert env.progress[0, 0].item() == pytest.approx(cfg.conquest_rate * (2 - 1))
+
+
+def test_conquest_drains_without_attackers():
     env = make()
     blank(env)
     env.place(0, 0, 10, 2, RIGHT)

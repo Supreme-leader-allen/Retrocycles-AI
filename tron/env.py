@@ -252,13 +252,15 @@ class FortressEnv:
             in_k = zone_of == k
             att[:, k] = (in_k & (self.team != k)).sum(1).float()
             dfn[:, k] = (in_k & (self.team == k)).sum(1).float()
-        delta = cfg.conquest_rate * att - cfg.defend_rate * dfn
-        delta = delta - cfg.conquest_decay * (att == 0).float()
+        # capture needs MORE attackers than defenders; otherwise progress drains
+        excess = att - dfn
+        delta = torch.where(excess > 0, cfg.conquest_rate * excess,
+                            torch.full_like(excess, -cfg.conquest_decay))
         self.progress = (self.progress + delta).clamp(0.0, 1.0)
 
         # ---- round outcome ---------------------------------------------------
         team_alive = self.alive.view(self.N, 2, self.T).any(2)                  # (N, 2)
-        conquered = self.progress >= 1.0
+        conquered = self.progress >= 1.0 - 1e-5   # float sums of 1/30 can land just under 1
         lost = conquered | ~team_alive
         timeout = self.steps >= cfg.max_steps
         done = lost.any(1) | timeout
