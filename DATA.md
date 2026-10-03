@@ -1,6 +1,6 @@
 # What gets recorded
 
-Everything lives under `$OUT` (default `output/`, `/workspace/output` on RunPod).
+Everything lives under `$OUT` (default `output/`, `/workspace/retrocycles_output` on RunPod).
 `<label>` is the run name (`main_s0`, `no_credit_s0`, `pbt_s0_m2`, ...). It is also the
 `run_label` column in the CSVs, so you can concatenate all CSVs and group by it.
 

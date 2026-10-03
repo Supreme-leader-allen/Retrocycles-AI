@@ -38,9 +38,10 @@ EVAL_ROUNDS="${EVAL_ROUNDS:-1024}"
 # not just across rounds. 1 is fine for a first pass; 3 is better for the paper.
 SEEDS="${SEEDS:-1}"
 
-# Where results go. /workspace is RunPod's persistent volume.
+# Where results go. /workspace is RunPod's persistent volume. Not /workspace/output: that is
+# where the Rocket League project writes, and the two may share a volume.
 if [ -d /workspace ]; then
-    OUT="${OUT:-/workspace/output}"
+    OUT="${OUT:-/workspace/retrocycles_output}"
 else
     OUT="${OUT:-$REPO_ROOT/output}"
 fi
