@@ -7,10 +7,26 @@ enemy" is always from the viewer's point of view.
     vec (self + all other cycles) -> MLP ───────────────────┴-> MLP -> policy logits (3)
                                                                    -> value (1)
 """
+import contextlib
+
 import torch
 import torch.nn as nn
 
 from .env import NUM_CELL_CODES
+
+
+def amp(device, enabled=True):
+    """bfloat16 autocast on CUDA (tensor cores), a no-op on CPU."""
+    device = torch.device(device)
+    if enabled and device.type == "cuda":
+        return torch.autocast("cuda", dtype=torch.bfloat16)
+    return contextlib.nullcontext()
+
+
+def setup_cuda_speed():
+    torch.backends.cudnn.benchmark = True
+    torch.backends.cuda.matmul.allow_tf32 = True
+    torch.backends.cudnn.allow_tf32 = True
 
 
 def _init(layer, gain=2 ** 0.5):
@@ -41,7 +57,12 @@ class Policy(nn.Module):
         self.v = _init(nn.Linear(hidden, 1), gain=1.0)
 
     def forward(self, codes, vec):
+        # (B, K, K, E) permuted to (B, E, K, K) is already channels_last in memory
         x = self.emb(codes.long()).permute(0, 3, 1, 2)
         h = torch.cat([self.conv(x), self.vec(vec)], dim=1)
         h = self.trunk(h)
-        return self.pi(h), self.v(h).squeeze(-1)
+        # heads always in float32, even under bfloat16 autocast: PPO's probability
+        # ratios and the value regression need the precision
+        with torch.autocast(device_type=h.device.type, enabled=False):
+            h = h.float()
+            return self.pi(h), self.v(h).squeeze(-1)

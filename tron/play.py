@@ -7,6 +7,8 @@ the team it is assigned to are used.
 """
 import torch
 
+from .model import amp
+
 from .bots import random_actions, heuristic_actions
 from .metrics import MetricsTracker
 
@@ -17,7 +19,8 @@ def policy_controller(model, greedy=False):
     @torch.no_grad()
     def act(env, codes, vec):
         N, A = env.N, env.A
-        logits, _ = model(codes.view(N * A, env.K, env.K), vec.view(N * A, -1))
+        with amp(env.device):
+            logits, _ = model(codes.view(N * A, env.K, env.K), vec.view(N * A, -1))
         if greedy:
             a = logits.argmax(-1)
         else:

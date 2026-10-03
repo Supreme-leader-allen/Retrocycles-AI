@@ -28,7 +28,7 @@ import torch
 import torch.nn as nn
 from torch.distributions import Categorical
 
-from .model import Policy
+from .model import Policy, amp, setup_cuda_speed
 from .rewards import RewardConfig, compute_rewards
 from .metrics import MetricsTracker
 from .env import FortressEnv
@@ -61,6 +61,7 @@ class TrainConfig:
     eval_rounds: int = 2          # rounds per eval env (so eval_envs * eval_rounds rounds)
     replay_every: int = 100       # iterations between saved replay GIFs; 0 disables
     check_every: int = 10         # iterations between simulator invariant checks; 0 disables
+    amp: bool = True              # bfloat16 mixed precision on CUDA (ignored on CPU)
     seed: int = 0
 
     def to_dict(self):
@@ -77,12 +78,16 @@ class PPOTrainer:
                  metrics_csv=None, run_label="run", log=print):
         self.gcfg, self.cfg, self.rcfg = game_cfg, train_cfg, reward_cfg
         self.device = torch.device(device)
+        if self.device.type == "cuda":
+            setup_cuda_speed()
         self.log = log
         torch.manual_seed(train_cfg.seed)
         random.seed(train_cfg.seed)
         self.env = FortressEnv(game_cfg, train_cfg.num_envs, device=self.device, seed=train_cfg.seed)
         env = self.env
         self.model = Policy(env.K, env.vec_dim, hidden=train_cfg.hidden).to(self.device)
+        if self.device.type == "cuda":
+            self.model = self.model.to(memory_format=torch.channels_last)  # tensor-core friendly convs
         self.opt = torch.optim.Adam(self.model.parameters(), lr=train_cfg.lr, eps=1e-5)
         self.opp_model = copy.deepcopy(self.model).eval()
         self.pool = []                      # list of CPU state_dicts
@@ -153,14 +158,16 @@ class PPOTrainer:
         self.model.eval()
         for t in range(L):
             codes, vec = self.obs
-            logits, value = self.model(codes.view(N * A, K, K), vec.view(N * A, -1))
+            with amp(dev, cfg.amp):
+                logits, value = self.model(codes.view(N * A, K, K), vec.view(N * A, -1))
             dist = Categorical(logits=logits)
             act = dist.sample()
             logp = dist.log_prob(act).view(N, A)
             act = act.view(N, A)
             value = value.view(N, A)
             if self.pool_active:
-                ol, _ = self.opp_model(codes[:M, T:].reshape(M * T, K, K), vec[:M, T:].reshape(M * T, -1))
+                with amp(dev, cfg.amp):
+                    ol, _ = self.opp_model(codes[:M, T:].reshape(M * T, K, K), vec[:M, T:].reshape(M * T, -1))
                 act[:M, T:] = Categorical(logits=ol).sample().view(M, T)
 
             alive0 = env.alive.clone()
@@ -195,7 +202,8 @@ class PPOTrainer:
             self.obs = env.observe()
 
         codes, vec = self.obs
-        _, next_val = self.model(codes.view(N * A, K, K), vec.view(N * A, -1))
+        with amp(dev, cfg.amp):
+            _, next_val = self.model(codes.view(N * A, K, K), vec.view(N * A, -1))
         next_val = next_val.view(N, A)
 
         # GAE
@@ -252,7 +260,8 @@ class PPOTrainer:
             perm = torch.randperm(n, device=self.device)
             for s in range(0, n, cfg.minibatch):
                 mb = perm[s:s + cfg.minibatch]
-                logits, v = self.model(codes[mb], vec[mb])
+                with amp(self.device, cfg.amp):
+                    logits, v = self.model(codes[mb], vec[mb])
                 dist = Categorical(logits=logits)
                 logp = dist.log_prob(act[mb])
                 ent = dist.entropy()
