@@ -17,13 +17,16 @@ def random_actions(env, gen=None):
 
 
 def heuristic_actions(env, split_roles=False, gen=None, noise=0.5):
+    """split_roles: bool for every env, or an (N,) bool tensor choosing per env."""
     N, A = env.N, env.A
     rays = env.rays().float()                                              # (N, A, 3) straight/left/right
     team_of = env.team.unsqueeze(0).expand(N, A)
     target_team = 1 - team_of
-    if split_roles:
+    if torch.is_tensor(split_roles) or split_roles:
+        per_env = (split_roles.view(N, 1) if torch.is_tensor(split_roles)
+                   else torch.ones((N, 1), dtype=torch.bool, device=env.device))
         slot = (env.agent_ids % env.T).unsqueeze(0).expand(N, A)
-        target_team = torch.where(slot % 2 == 1, team_of, target_team)
+        target_team = torch.where(per_env & (slot % 2 == 1), team_of, target_team)
     tgt = env.zone_center[target_team]                                     # (N, A, 2)
     posf = env.pos.float()
     tf, tr = env._ego(tgt[..., 0] - posf[..., 0], tgt[..., 1] - posf[..., 1], env.dir)

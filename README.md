@@ -79,7 +79,9 @@ limitations for the paper, not bugs. All are in `tron/config.py`.
   (conquest progress, kills, individual death penalty) that fades to 0 over 4e8 samples.
 - **Credit after death:** a cycle's episode is the whole round, so a cycle that dies still
   receives its team's eventual result (actions that helped the team before dying get credit).
-- **Self-play + opponent pool:** 25% of rounds are played against frozen past snapshots.
+- **Self-play + opponent pool + scripted opponents:** 25% of rounds are played against frozen past snapshots and
+  20% against the heuristic (all-attack rush) and split-role bots, so the policy also meets strategies its own
+  self-play never produces (without them it learned to leave its base empty).
 - **Humanlike limits:** 2-decision reaction delay on the policy's observations.
 - **PBT (optional condition):** population of 4; every generation the bottom quarter copies a top member
   and perturbs lr / entropy / conquest / kill weights by ×0.8-1.2; fitness = cross-play win rate.

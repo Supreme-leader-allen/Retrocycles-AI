@@ -62,7 +62,7 @@ the heuristic has `frac_defending` 0 and `undefended_rate` 1.0. `00_baseline.sh`
 | **bug detector** | `side0_win` | self-play is the same policy on both sides, so this must hover around 0.5. Persistently far from it = an asymmetry bug |
 | deaths | `deaths_self`, `friendly_fire_deaths`, `deaths_enemy`, `deaths_rim`, `deaths_headon`, `kills` | |
 | coordination (self-play) | `role_entropy`, `role_specialization`, `frac_defending`, `frac_attacking`, `multi_attack_rate`, `undefended_rate`, `avg_teammate_dist`, `breaches_made`, `breaches_used` | coordination emerging over training |
-| opponents | `win_vs_pool`, `pool_size` | win_vs_pool well above 0.5 = still improving over its past self |
+| opponents | `win_vs_pool`, `pool_size`, `train_win_vs_heuristic`, `train_win_vs_split`, `frac_defending_vs_opponents` | win_vs_pool well above 0.5 = still improving over its past self |
 | eval (NaN except on eval iterations) | `eval_heuristic_win/draw/role_spec/breach_use`, same for `eval_split_*` | **the main learning curve** |
 | settings | `lr`, `ent_coef`, `shaping_scale` | (change over time under PBT / annealing) |
 
@@ -82,6 +82,10 @@ own zone at the bottom, enemy zone at the top (team 1 is rotated 180°). Also `z
 - `tests/` (63 tests) must pass before a run: `python -m pytest -q`.
 
 ## Known measurement caveats (state these in the paper)
+
+- 20% of training games are against the heuristic / split bots (`bot_frac`), so the `eval_*` win rates vs those
+  bots measure in-distribution skill, not generalisation. The research comparisons are the coordination
+  metrics and head-to-heads between runs (`99_evaluate.sh`), which no run trained against.
 
 - Scripted bots read the game state directly, so they have **no reaction delay**; the trained policy plays
   with `reaction_delay=2` decisions. Wins against bots are therefore against a slightly faster-reacting opponent.

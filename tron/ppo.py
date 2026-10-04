@@ -11,6 +11,12 @@ instead a frozen snapshot of an earlier policy (opponent pool), which stops
 the policy from overfitting to beating only its current self; those
 snapshot-controlled cycles are excluded from training.
 
+Scripted opponents: in a further fraction ``bot_frac`` of the envs, team 1 is
+a scripted bot (alternating heuristic all-attack rushers and split-role
+teams). Pure self-play never meets an all-out rush, so without this the policy
+learned to leave its base empty (7v7 pilot: frac_defending ~0.05, lost 60% of
+games to the rush bot by conquest). Bot-controlled cycles are not trained on.
+
 Credit after death (``credit_after_death=True``, the default): a cycle's
 episode is the whole ROUND, not its own life. After it crashes it keeps
 receiving its team's reward (masked out of the policy loss, since a dead cycle
@@ -31,6 +37,7 @@ from torch.distributions import Categorical
 from .model import Policy, amp, setup_cuda_speed
 from .rewards import RewardConfig, compute_rewards
 from .metrics import MetricsTracker
+from .bots import heuristic_actions
 from .env import FortressEnv
 
 REWARD_PARTS = ("win", "conquest", "kill", "death")
@@ -55,6 +62,7 @@ class TrainConfig:
     pool_frac: float = 0.25
     pool_every: int = 20          # iterations between snapshots added to the pool
     pool_size: int = 30
+    bot_frac: float = 0.2         # fraction of envs where team 1 is a scripted bot (heuristic / split)
     save_every: int = 50          # iterations
     eval_every: int = 25          # iterations; 0 disables
     eval_envs: int = 64
@@ -98,6 +106,12 @@ class PPOTrainer:
 
         N, A, T = env.N, env.A, env.T
         self.n_pool_envs = int(round(train_cfg.pool_frac * N)) if train_cfg.pool_frac > 0 else 0
+        self.n_bot_envs = int(round(train_cfg.bot_frac * N)) if train_cfg.bot_frac > 0 else 0
+        assert self.n_pool_envs + self.n_bot_envs <= N, "pool_frac + bot_frac > 1"
+        # envs [n_pool, n_pool + n_bot): team 1 is a bot; even ones heuristic, odd ones split
+        self.bot_lo, self.bot_hi = self.n_pool_envs, self.n_pool_envs + self.n_bot_envs
+        self.bot_split = torch.zeros(N, dtype=torch.bool, device=self.device)
+        self.bot_split[self.bot_lo + 1:self.bot_hi:2] = True
         self.trainable = torch.ones((N, A), dtype=torch.bool, device=self.device)
         self.pool_active = False
 
@@ -128,6 +142,10 @@ class PPOTrainer:
         self.pool_active = M > 0 and len(self.pool) > 0
         for n in range(self.env.N):
             self.tracker.controllers[n] = ["policy", "policy"]
+        if self.n_bot_envs:
+            self.trainable[self.bot_lo:self.bot_hi, T:] = False
+            for n in range(self.bot_lo, self.bot_hi):
+                self.tracker.controllers[n] = ["policy", "split" if self.bot_split[n] else "heuristic"]
         if not self.pool_active:
             return
         self.opp_model.load_state_dict(random.choice(self.pool))
@@ -169,6 +187,10 @@ class PPOTrainer:
                 with amp(dev, cfg.amp):
                     ol, _ = self.opp_model(codes[:M, T:].reshape(M * T, K, K), vec[:M, T:].reshape(M * T, -1))
                 act[:M, T:] = Categorical(logits=ol).sample().view(M, T)
+            if self.n_bot_envs:
+                lo, hi = self.bot_lo, self.bot_hi
+                bot = heuristic_actions(env, split_roles=self.bot_split)
+                act[lo:hi, T:] = bot[lo:hi, T:]
 
             alive0 = env.alive.clone()
             info = env.step(act)
@@ -368,6 +390,11 @@ def summarize_rows(rows):
               "avg_speed", "turn_rate"):
         out[c] = _mean([r[c] for r in sp])
     out["win_vs_pool"] = _mean([float(r["result"] == "win") for r in vp])
+    for bot in ("heuristic", "split"):
+        vb = [r for r in rows if r["controller"] == "policy" and r["opponent"] == bot]
+        out[f"train_win_vs_{bot}"] = _mean([float(r["result"] == "win") for r in vb])
+    defending = [r["frac_defending"] for r in rows if r["controller"] == "policy" and r["opponent"] != "policy"]
+    out["frac_defending_vs_opponents"] = _mean(defending)
     return out
 
 

@@ -157,7 +157,8 @@ class TrainingRun:
             ev = f" | vs heur {s['eval_heuristic_win']:.2f} vs split {s['eval_split_win']:.2f}"
         print(f"[{self.label}] it {s['iteration']:5d} | {s['samples']/1e6:9.1f}M | {s['sps']:9,.0f} sps | "
               f"ent {s['entropy']:.3f} kl {s['approx_kl']:.4f} ev {s['explained_var']:.2f} | "
-              f"len {s['round_steps']:.0f} side0 {s['side0_win']:.2f} | pool {s['win_vs_pool']:.2f}{ev}",
+              f"len {s['round_steps']:.0f} side0 {s['side0_win']:.2f} | pool {s['win_vs_pool']:.2f} "
+              f"bots {s['train_win_vs_heuristic']:.2f}/{s['train_win_vs_split']:.2f}{ev}",
               flush=True)
 
     # ------------------------------------------------------------------ main loop
