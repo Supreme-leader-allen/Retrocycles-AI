@@ -56,7 +56,7 @@ the heuristic has `frac_defending` 0 and `undefended_rate` 1.0. `00_baseline.sh`
 | progress | `iteration`, `samples`, `sps`, `collect_s`, `update_s`, `gpu_mem_gb` | throughput dropping = something wrong with the pod |
 | PPO health | `pg_loss`, `v_loss`, `entropy`, `approx_kl`, `clipfrac`, `grad_norm`, `explained_var`, `param_norm` | entropy collapsing to ~0 early = premature convergence; kl > 0.05 or clipfrac > 0.3 = lr too high; explained_var should rise above 0 |
 | values | `value_mean`, `return_mean`, `adv_std_raw`, `mean_reward` | |
-| reward parts | `rew_win`, `rew_conquest`, `rew_kill`, `rew_death` (mean per sample, already scaled) | shaping should shrink to 0 as `shaping_scale` anneals; if shaping dwarfs `rew_win`, the agent optimises the shaping |
+| reward parts | `rew_win`, `rew_conquest`, `rew_kill`, `rew_death` (mean ABSOLUTE value per sample, already scaled; signed means are ~0 because self-play rewards cancel between teams) | shaping should shrink to 0 as `shaping_scale` anneals; if shaping dwarfs `rew_win`, the agent optimises the shaping |
 | behaviour | `act_straight`, `act_left`, `act_right`, `alive_frac`, `turn_rate`, `avg_speed`, `survival` | a policy stuck at ~100% one action = collapse |
 | rounds | `rounds`, `round_steps`, `selfplay_draw`, `end_conquest`, `end_elimination`, `end_timeout` | the game strategy shifting from elimination to conquest is a finding |
 | **bug detector** | `side0_win` | self-play is the same policy on both sides, so this must hover around 0.5. Persistently far from it = an asymmetry bug |

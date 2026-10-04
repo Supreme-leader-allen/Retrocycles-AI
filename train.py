@@ -44,7 +44,7 @@ def main():
         if not os.path.exists(latest):
             sys.exit(f"--resume given but {latest} does not exist")
         ckpt = torch.load(latest, map_location=device, weights_only=False)
-        gcfg = FortressConfig(**ckpt["game_cfg"])
+        gcfg = FortressConfig.from_dict(ckpt["game_cfg"])
         tcfg = TrainConfig(**ckpt["train_cfg"])
         rcfg = RewardConfig(**ckpt["reward_cfg"])
         for k, v in parse_overrides(args.train, TrainConfig).items():  # e.g. a different num_envs on a new pod

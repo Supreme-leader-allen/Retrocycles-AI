@@ -83,6 +83,7 @@ limitations for the paper, not bugs. All are in `tron/config.py`.
   20% against the heuristic (all-attack rush) and split-role bots, so the policy also meets strategies its own
   self-play never produces (without them it learned to leave its base empty).
 - **Humanlike limits:** 2-decision reaction delay on the policy's observations.
+- **Agent identity:** each cycle sees its slot number (1-7), so the shared policy can assign fixed roles.
 - **PBT (optional condition):** population of 4; every generation the bottom quarter copies a top member
   and perturbs lr / entropy / conquest / kill weights by ×0.8-1.2; fitness = cross-play win rate.
 
@@ -97,6 +98,7 @@ limitations for the paper, not bugs. All are in `tron/config.py`.
 | `04_partial_info.sh` | `partial_info_s<seed>` | enemies beyond 15 cells hidden | main |
 | `05_no_pool.sh` | `no_pool_s<seed>` | pure self-play | main |
 | `06_no_humanlike.sh` | `no_humanlike_s<seed>` | instant reactions (`reaction_delay=0`) | main |
+| `08_no_agent_id.sh` | `no_agent_id_s<seed>` | cycles don't see their slot number | main |
 | `07_pbt.sh` | `pbt_s<seed>` (members `pbt_s<seed>_m<k>`) | population-based training: 4 members, hyperparameters evolved from cross-play fitness (4× compute) | main |
 | `99_evaluate.sh` | `final_<run>_vs_<opp>` | every run vs random / heuristic / split, + head-to-head vs main | |
 

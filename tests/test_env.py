@@ -443,7 +443,7 @@ def test_vector_relative_positions_and_order():
     env.place(0, 3, 30, 30, LEFT)
     _, v = _crop(env, 0)
     from tron.env import SELF_FEATURES, OTHER_FEATURES
-    o = v[SELF_FEATURES:].view(3, OTHER_FEATURES)
+    o = v[env.self_dim:].view(3, OTHER_FEATURES)
     # slot 0 = teammate (agent 1), slots 1,2 = enemies (agents 2,3)
     assert o[0, 2].item() == pytest.approx(5 / S) and o[0, 3].item() == pytest.approx(0.0)
     assert o[1, 2].item() == pytest.approx(0.0) and o[1, 3].item() == pytest.approx(3 / S)
@@ -470,7 +470,7 @@ def test_vis_radius_hides_far_enemies_only():
     env.place(0, 3, 30, 30, RIGHT)   # far enemy: hidden
     from tron.env import SELF_FEATURES, OTHER_FEATURES
     _, v = _crop(env, 0)
-    o = v[SELF_FEATURES:].view(3, OTHER_FEATURES)
+    o = v[env.self_dim:].view(3, OTHER_FEATURES)
     assert o[:, 1].tolist() == [1.0, 1.0, 0.0]
     assert o[2, 2:].abs().sum().item() == 0.0
     assert o[2, 0].item() == 1.0     # alive status is still known
@@ -723,3 +723,30 @@ def test_invariants_hold_during_random_play():
         info = env.step(torch.randint(0, 3, (env.N, env.A)))
         assert env.check_invariants() == []
         env.reset_done(info["done"])
+
+
+# ---------------------------------------------------------------- agent id
+def test_agent_slot_one_hot_in_observation():
+    from tron.env import SELF_FEATURES
+    env = make(team_size=3, agent_id_obs=True)
+    _, vec = env.observe()
+    ids = vec[0, :, SELF_FEATURES:SELF_FEATURES + 3]
+    expect = torch.eye(3).repeat(2, 1)              # agent i and agent T+i share slot i
+    assert torch.equal(ids, expect)
+    assert env.vec_dim == SELF_FEATURES + 3 + 5 * 11
+
+
+def test_agent_id_off_removes_it():
+    from tron.env import SELF_FEATURES, OTHER_FEATURES
+    env = make(team_size=3, agent_id_obs=False)
+    _, vec = env.observe()
+    assert vec.shape[-1] == SELF_FEATURES + 5 * OTHER_FEATURES == env.vec_dim
+
+
+def test_old_checkpoint_configs_still_load():
+    old = FortressConfig(team_size=2).to_dict()
+    del old["agent_id_obs"]
+    old["defend_rate"] = 0.02                       # removed setting from the first version
+    cfg = FortressConfig.from_dict(old)
+    assert cfg.agent_id_obs is False and not hasattr(cfg, "defend_rate")
+    assert FortressConfig.from_dict(FortressConfig(team_size=2).to_dict()).agent_id_obs is True

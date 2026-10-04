@@ -152,7 +152,7 @@ def main(argv=None):
     if os.path.exists(state_path):
         with open(state_path) as f:
             st = json.load(f)
-        gcfg = FortressConfig(**st["game"])
+        gcfg = FortressConfig.from_dict(st["game"])
         tcfg = TrainConfig(**st["train"])
         rcfg = RewardConfig(**st["reward"])
         hparams = {int(k): v for k, v in st["hparams"].items()}

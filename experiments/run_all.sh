@@ -2,7 +2,7 @@
 # Everything, in order. Same script locally (smoke test) and on the pod (real run):
 #   local :  NUM_ENVS=64   SAMPLES=2e6 bash experiments/run_all.sh
 #   pod   :  NUM_ENVS=2048 SAMPLES=2e9 bash experiments/run_all.sh
-# CORE_ONLY=1 skips the ablations (02-06). SKIP_PBT=1 skips PBT (07).
+# CORE_ONLY=1 skips the ablations (02-06, 08). SKIP_PBT=1 skips PBT (07).
 set -euo pipefail
 DIR="$(dirname "$0")"
 source "$DIR/params.sh"
@@ -14,6 +14,7 @@ if [ "${CORE_ONLY:-0}" != "1" ]; then
     bash "$DIR/04_partial_info.sh"
     bash "$DIR/05_no_pool.sh"
     bash "$DIR/06_no_humanlike.sh"
+    bash "$DIR/08_no_agent_id.sh"
 fi
 if [ "${SKIP_PBT:-0}" != "1" ]; then
     bash "$DIR/07_pbt.sh"     # PBT_MEMBERS x the compute of one run; SKIP_PBT=1 to leave it out

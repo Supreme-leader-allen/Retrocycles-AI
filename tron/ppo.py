@@ -208,7 +208,7 @@ class PPOTrainer:
                 vmask = alive0 & self.trainable
             pmask = alive0 & self.trainable
             for p in REWARD_PARTS:
-                part_sum[p] += (parts[p] * vmask).sum()
+                part_sum[p] += (parts[p].abs() * vmask).sum()   # magnitude: signed means cancel in self-play
 
             buf["codes"][t] = codes
             buf["vec"][t] = vec

@@ -33,7 +33,7 @@ def main():
     ca, _, ck_a = make_controller(args.a, args.device, greedy=False)
     cb, _, ck_b = make_controller(args.b, args.device, greedy=False)
     ck = ck_a or ck_b
-    gcfg = FortressConfig(**ck["game_cfg"]) if ck else FortressConfig(team_size=args.team_size)
+    gcfg = FortressConfig.from_dict(ck["game_cfg"]) if ck else FortressConfig(team_size=args.team_size)
     torch.manual_seed(args.seed)
     env = FortressEnv(gcfg, 1, device=args.device, seed=args.seed)
     frames, info = record_round(env, ca, cb, args.gif, scale=args.scale, fps=args.fps)

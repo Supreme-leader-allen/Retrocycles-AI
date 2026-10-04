@@ -71,6 +71,8 @@ class FortressConfig:
     reaction_delay: int = 2      # policy sees the game as it was this many decisions ago (0 = instant)
     turn_cooldown: int = 0       # after a turn, further turns are ignored for this many decisions
 
+    agent_id_obs: bool = True    # each cycle sees its own slot number (one-hot, 0..team_size-1), so a
+                                 # shared policy can settle on fixed roles (standard in MAPPO)
     obs_radius: int = 10         # egocentric crop is (2r+1) x (2r+1)
     vis_radius: float = 0.0      # >0: cycles further than this are hidden in the vector obs
     spawn_jitter: int = 1        # random +-cells added to each spawn x position
@@ -107,3 +109,12 @@ class FortressConfig:
 
     def to_dict(self):
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, d):
+        """Rebuild a config saved in a checkpoint, including ones saved by older code:
+        settings added since then get the value that code effectively used, removed ones are dropped."""
+        d = dict(d)
+        d.setdefault("agent_id_obs", False)      # added after the first pilots
+        known = {f for f in cls.__dataclass_fields__}
+        return cls(**{k: v for k, v in d.items() if k in known})

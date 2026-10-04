@@ -53,7 +53,7 @@ def main():
         name_a, name_b = name_a + "_A", name_b + "_B"
     ck = ck_a or ck_b
     if ck is not None:
-        gcfg = FortressConfig(**ck["game_cfg"])
+        gcfg = FortressConfig.from_dict(ck["game_cfg"])
         if ck_a and ck_b and ck_a["game_cfg"] != ck_b["game_cfg"]:
             print("note: the two checkpoints were trained with different game configs; using A's")
     else:

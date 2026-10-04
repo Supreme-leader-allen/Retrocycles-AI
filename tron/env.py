@@ -139,7 +139,9 @@ class FortressEnv:
                  if dy * dy + dx * dx <= er * er] if er > 0 else []
         self.blast_off = torch.tensor(blast, dtype=torch.long, device=dev)
 
-        self.vec_dim = SELF_FEATURES + (A - 1) * OTHER_FEATURES
+        # self features (+ own slot one-hot if agent_id_obs), then the other agents
+        self.self_dim = SELF_FEATURES + (self.T if cfg.agent_id_obs else 0)
+        self.vec_dim = self.self_dim + (A - 1) * OTHER_FEATURES
         self.ray_len = S
 
         # ---- dynamic state --------------------------------------------------
@@ -535,7 +537,12 @@ class FortressEnv:
         order = self.other_order.view(1, A, A - 1, 1).expand(N, A, A - 1, OTHER_FEATURES)
         others = pair.gather(2, order).reshape(N, A, -1)
 
-        vec = torch.cat([self_feat, others], dim=-1)
+        parts = [self_feat]
+        if cfg.agent_id_obs:
+            slot = torch.nn.functional.one_hot(self.agent_ids % self.T, self.T).float()   # (A, T)
+            parts.append(slot.unsqueeze(0).expand(N, A, self.T))
+        parts.append(others)
+        vec = torch.cat(parts, dim=-1)
         return codes, vec
 
     # =====================================================================
