@@ -15,11 +15,12 @@ UP, RIGHT, DOWN, LEFT = 0, 1, 2, 3
 
 
 def make(team_size=1, n=1, **kw):
-    kw.setdefault("spawn_jitter", 0)
-    kw.setdefault("trail_ticks", 0)
-    kw.setdefault("dead_wall_ticks", 10_000)
-    kw.setdefault("explosion_radius", 0)   # rule tests isolate one mechanic; explosions tested below
-    kw.setdefault("reaction_delay", 0)     # humanlike limits tested separately below
+    # rule tests isolate one mechanic at a time; each of these is tested separately below
+    kw.setdefault("wall_length_m", 0)          # infinite walls
+    kw.setdefault("walls_stay_up_s", 1000.0)   # dead walls stay
+    kw.setdefault("explosion_radius_m", 0)
+    kw.setdefault("rubber_m", 0)               # die on contact
+    kw.setdefault("reaction_delay", 0)
     cfg = FortressConfig(team_size=team_size, **kw)
     return FortressEnv(cfg, num_envs=n)
 
@@ -149,90 +150,196 @@ def test_no_acceleration_in_open_space():
     env = make()
     blank(env)
     env.place(0, 0, 10, 10, RIGHT)
-    env.place(0, 1, 30, 30, LEFT)
+    env.place(0, 1, 100, 30, LEFT)
     for _ in range(5):
         act(env, S_, S_)
     assert int(env.speed[0, 0]) == env.cfg.base_speed
     assert env.interior_pos(0, 0) == (10, 15)
 
 
-def test_wall_riding_accelerates_to_two_cells_per_step_without_gaps():
+def _wall_line(env, y, x0, x1, owner=1):
+    for x in range(x0, x1):
+        env.set_cell(0, y, x, owner)
+
+
+def test_rim_gives_no_boost():
     env = make()
     blank(env)
-    env.place(0, 0, 0, 1, RIGHT)      # rim directly to the left (above)
+    env.place(0, 0, 0, 1, RIGHT)          # rim directly above
     env.place(0, 1, 30, 30, UP)
-    for _ in range(12):
-        info = act(env, S_, S_)
-    assert int(env.speed[0, 0]) == env.cfg.max_speed
-    assert int(env.moved[0, 0]) == 2
-    y, x = env.interior_pos(0, 0)
-    assert y == 0 and x > 13
-    for xx in range(1, x + 1):
-        assert env.cell(0, 0, xx) == 0, f"gap in trail at x={xx}"
+    for _ in range(10):
+        act(env, S_, S_)
+    assert int(env.speed[0, 0]) == env.cfg.base_speed
+    assert env.interior_pos(0, 0) == (0, 11)
 
 
-def test_fast_cycle_dies_on_first_cell_and_stops_on_second():
-    # riding the rim keeps the cycle at max speed (2 cells per step)
+def test_grinding_a_wall_accelerates_and_leaves_no_gaps():
     env = make()
     blank(env)
-    env.place(0, 0, 0, 10, RIGHT, speed=100)
-    env.place(0, 1, 30, 30, LEFT)
-    env.set_cell(0, 0, 12, 1)
+    _wall_line(env, 9, 0, 160)            # enemy wall directly above row 10
+    env.place(0, 0, 10, 1, RIGHT)
+    env.place(0, 1, 100, 30, UP)
+    for _ in range(60):                   # 6 s of grinding: v = 30 + 90(1 - e^-0.6) ~ 70 m/s
+        act(env, S_, S_)
+    assert int(env.speed[0, 0]) > 2 * env.cfg.base_speed
+    assert int(env.moved[0, 0]) >= 2
+    y, x = env.interior_pos(0, 0)
+    for xx in range(1, x + 1):
+        assert env.cell(0, 10, xx) == 0, f"gap in trail at x={xx}"
+
+
+def test_grinding_strength_falls_off_with_distance():
+    gains = []
+    for gap in (1, 2, 3):
+        env = make()
+        blank(env)
+        _wall_line(env, 10 - gap, 0, 40)
+        env.place(0, 0, 10, 1, RIGHT)
+        env.place(0, 1, 100, 30, UP)
+        act(env, S_, S_)
+        gains.append(float(env.speed[0, 0]) - env.cfg.base_speed)
+    assert gains[0] > gains[1] > 0 and gains[2] == 0
+    cfg = make().cfg
+    assert gains[0] == pytest.approx(cfg.ticks_per_step * cfg.accel_units(1), rel=0.01)  # minus tiny decay
+
+
+def test_walls_on_both_sides_add_up():
+    env = make()
+    blank(env)
+    _wall_line(env, 9, 0, 40)
+    _wall_line(env, 11, 0, 40)
+    env.place(0, 0, 10, 1, RIGHT)
+    env.place(0, 1, 100, 30, UP)
+    act(env, S_, S_)
+    gain = float(env.speed[0, 0]) - env.cfg.base_speed
+    assert gain == pytest.approx(2 * env.cfg.ticks_per_step * env.cfg.accel_units(1), rel=0.01)
+
+
+def test_boost_decays_slowly_after_leaving_the_wall():
+    env = make()
+    blank(env)
+    fast = 2 * env.cfg.base_speed                 # 60 m/s
+    env.place(0, 0, 10, 10, RIGHT, speed=fast)
+    env.place(0, 1, 100, 30, LEFT)
+    for _ in range(10):                           # 1 s in the open
+        act(env, S_, S_)
+    lost = fast - int(env.speed[0, 0])
+    excess = fast - env.cfg.base_speed
+    # ~10% of the excess per second (CYCLE_SPEED_DECAY_ABOVE 0.1), allowing for per-tick rounding up
+    assert 0.08 * excess <= lost <= 0.12 * excess
+
+
+def test_fast_cycle_dies_at_the_wall_on_the_last_free_cell():
+    env = make()
+    blank(env)
+    top = env.cfg.max_speed_units                 # 90 m/s: moves on tick 1, then slightly slower
+    env.place(0, 0, 10, 10, RIGHT, speed=top)
+    env.place(0, 1, 100, 30, LEFT)
+    env.set_cell(0, 10, 12, 1)
     act(env, S_, S_)
     assert not env.alive[0, 0]
-    assert env.interior_pos(0, 0) == (0, 11)
+    assert env.interior_pos(0, 0) == (10, 11)
 
     env2 = make()
     blank(env2)
-    env2.place(0, 0, 0, 10, RIGHT, speed=100)
-    env2.place(0, 1, 30, 30, LEFT)
-    env2.set_cell(0, 0, 11, 1)
+    env2.place(0, 0, 10, 10, RIGHT, speed=top)
+    env2.place(0, 1, 100, 30, LEFT)
+    env2.set_cell(0, 10, 11, 1)
     act(env2, S_, S_)
-    assert not env2.alive[0, 0]
-    assert env2.interior_pos(0, 0) == (0, 10)
+    assert not env2.alive[0, 0] and env2.interior_pos(0, 0) == (10, 10)
 
 
-def test_speed_decays_away_from_walls():
-    env = make()
+# ---------------------------------------------------------------- rubber
+def test_rubber_saves_a_cycle_that_turns_in_time():
+    env = make(rubber_m=5.0)
     blank(env)
-    env.place(0, 0, 10, 10, RIGHT, speed=100)
-    env.place(0, 1, 30, 30, LEFT)
-    act(env, S_, S_)
-    assert int(env.speed[0, 0]) == 100 - 2 * env.cfg.speed_decay
-    assert int(env.moved[0, 0]) == 1
+    _wall_line(env, 10, 11, 12)                   # single wall cell ahead
+    env.place(0, 0, 10, 10, RIGHT)
+    env.place(0, 1, 100, 30, LEFT)
+    info = act(env, S_, S_)                       # blocked on tick 3: held, burns 1 m
+    assert env.alive[0, 0] and env.interior_pos(0, 0) == (10, 10)
+    assert float(info["rubber_used"][0, 0]) == pytest.approx(1.0)
+    act(env, L_, S_)                              # turns away and escapes
+    assert env.alive[0, 0] and env.interior_pos(0, 0) == (9, 10)
+
+
+def test_rubber_runs_out_after_five_metres():
+    env = make(rubber_m=5.0)
+    blank(env)
+    _wall_line(env, 10, 11, 12)
+    env.place(0, 0, 10, 10, RIGHT)
+    env.place(0, 1, 100, 30, LEFT)
+    act(env, S_, S_)                              # tick 3: 4 m left
+    act(env, S_, S_)                              # ticks 4-6: 1 m left
+    assert env.alive[0, 0]
+    info = act(env, S_, S_)                       # tick 7: gone
+    assert not env.alive[0, 0] and int(info["cause"][0, 0]) == 1
+    assert env.interior_pos(0, 0) == (10, 10)
+
+
+def test_faster_cycles_burn_rubber_faster():
+    env = make(rubber_m=5.0)
+    blank(env)
+    _wall_line(env, 10, 11, 12)
+    env.place(0, 0, 10, 10, RIGHT, speed=2 * env.cfg.base_speed)
+    env.place(0, 1, 100, 30, LEFT)
+    info = act(env, S_, S_)
+    # 60 m/s: first blocked on tick 2, burns ~2 m per tick on ticks 2 and 3 (base speed burns 1 m)
+    assert float(info["rubber_used"][0, 0]) == pytest.approx(4.0, abs=0.1)
+
+
+def test_rubber_refills_over_rubber_time():
+    env = make(rubber_m=5.0)
+    blank(env)
+    env.place(0, 0, 10, 10, RIGHT)
+    env.place(0, 1, 100, 30, LEFT)
+    env.rubber[0, 0] = 0.0
+    for _ in range(20):                           # 2 s in the open
+        act(env, S_, S_)
+    assert float(env.rubber[0, 0]) == pytest.approx(5.0 / 10.0 * 2.0, abs=0.02)
+
+
+def test_head_on_is_fatal_even_with_rubber():
+    env = make(rubber_m=5.0)
+    blank(env)
+    env.place(0, 0, 10, 10, RIGHT)
+    env.place(0, 1, 10, 12, LEFT)
+    info = act(env, S_, S_)
+    assert not env.alive[0].any()
+    assert info["cause"][0].tolist() == [CAUSE_HEADON, CAUSE_HEADON]
 
 
 # ---------------------------------------------------------------- walls over time
-def test_trail_expiry():
-    env = make(trail_ticks=6)
+def test_wall_length_is_a_distance():
+    env = make(wall_length_m=9.0)                 # 3 cells
     blank(env)
     env.place(0, 0, 10, 10, RIGHT)
-    env.place(0, 1, 30, 30, LEFT)
-    for _ in range(5):            # tick 10; cells stamped 0,2,4 expire; 6,8,10 remain
+    env.place(0, 1, 100, 30, LEFT)
+    for _ in range(5):                            # odometer 5: cells laid at 0..2 have expired
         act(env, S_, S_)
     assert [env.cell(0, 10, x) for x in range(10, 16)] == [EMPTY, EMPTY, EMPTY, 0, 0, 0]
 
 
 def test_dead_cycle_walls_removed_after_delay():
-    env = make(dead_wall_ticks=4)
+    env = make(walls_stay_up_s=0.2)               # 6 ticks
     blank(env)
     env.place(0, 0, 0, 5, RIGHT)
-    env.place(0, 1, 30, 30, LEFT)
-    act(env, S_, S_)                 # moves to (0,6)
-    act(env, L_, S_)                 # turns up into rim at tick 3 -> dies
+    env.place(0, 1, 100, 30, LEFT)
+    act(env, S_, S_)                              # moves to (0,6)
+    act(env, L_, S_)                              # turns up into the rim, dies at tick 6
     assert not env.alive[0, 0]
-    assert env.cell(0, 0, 5) == 0    # still there (only 1 tick after death)
-    act(env, S_, S_)                 # tick 6, 3 ticks after death
     assert env.cell(0, 0, 5) == 0
-    act(env, S_, S_)                 # tick 8, 5 ticks after death
+    act(env, S_, S_)                              # tick 9: 3 ticks after death
+    assert env.cell(0, 0, 5) == 0
+    act(env, S_, S_)                              # tick 12: 6 ticks after death
     assert env.cell(0, 0, 5) == EMPTY and env.cell(0, 0, 6) == EMPTY
 
 
 def test_living_cycle_head_never_expires():
-    env = make(trail_ticks=2)
+    env = make(wall_length_m=3.0)
     blank(env)
     env.place(0, 0, 10, 10, RIGHT)
-    env.place(0, 1, 30, 30, LEFT)
+    env.place(0, 1, 100, 30, LEFT)
     for _ in range(3):
         act(env, S_, S_)
     y, x = env.interior_pos(0, 0)
@@ -245,67 +352,64 @@ def _zone_cell(env, k):
     return int(round(cy)) - env.P, int(round(cx)) - env.P
 
 
-def test_lone_attacker_captures_at_conquest_rate():
+@pytest.mark.parametrize("att,dfn,seconds", [
+    (1, 0, 5.0), (2, 0, 2.0), (2, 1, 10 / 3), (2, 2, 10.0), (1, 1, None), (0, 0, None), (0, 2, None),
+])
+def test_capture_times_match_the_wiki(att, dfn, seconds):
+    """wiki.armagetronad.org Fortress: 1v0 5 s, 1v1 unconquerable, 2v0 2 s, 2v1 3.3 s, 2v2 10 s."""
+    from tron.env import conquest_delta
+    cfg = FortressConfig()
+    per_step = float(conquest_delta(cfg, torch.tensor(float(att)), torch.tensor(float(dfn))))
+    if seconds is None:
+        assert per_step <= 0
+    else:
+        assert per_step > 0
+        assert cfg.decision_s / per_step == pytest.approx(seconds, rel=1e-4)
+
+
+def test_lone_attacker_in_the_simulator():
     env = make()
-    cfg = env.cfg
     blank(env)
     zy, zx = _zone_cell(env, 0)
     env.place(0, 1, zy, zx - 1, RIGHT)        # attacker in team 0's zone
     env.place(0, 0, 2, 2, RIGHT)              # defender far away
     act(env, S_, S_)
-    assert env.progress[0, 0].item() == pytest.approx(cfg.conquest_rate)
+    assert env.progress[0, 0].item() == pytest.approx(0.02)   # 1/50 per decision: 5 s
     assert env.progress[0, 1].item() == 0.0
 
 
-def test_lone_attacker_needs_exactly_30_steps():
+def test_one_defender_stops_one_attacker():
     env = make()
     blank(env)
     zy, zx = _zone_cell(env, 0)
     env.place(0, 1, zy, zx - 1, RIGHT)
-    env.place(0, 0, 2, 2, RIGHT)
-    p = torch.zeros(())
-    for _ in range(29):                       # float32 sum of 29 x (1/30), as the sim computes it
-        p = p + env.cfg.conquest_rate
-    env.progress[0, 0] = p
-    info = act(env, S_, S_)                   # step 30
-    assert info["done"][0] and int(info["winner"][0]) == 1
-    assert int(info["reason"][0]) == REASON_CONQUEST
-
-
-def test_equal_numbers_do_not_capture_and_drain():
-    env = make()
-    cfg = env.cfg
-    blank(env)
-    zy, zx = _zone_cell(env, 0)
-    env.place(0, 1, zy, zx - 1, RIGHT)        # 1 attacker
-    env.place(0, 0, zy + 2, zx - 2, RIGHT)    # 1 defender
+    env.place(0, 0, zy + 2, zx - 2, RIGHT)
     env.progress[0, 0] = 0.5
     act(env, S_, S_)
-    assert env.progress[0, 0].item() == pytest.approx(0.5 - cfg.conquest_decay)
+    assert env.progress[0, 0].item() == 0.5     # 0.3 - 0.2 - 0.1 = 0: neither captured nor drained
 
 
-def test_two_attackers_beat_one_defender_at_net_rate():
+def test_two_attackers_beat_one_defender():
     env = make(team_size=2)
-    cfg = env.cfg
     blank(env)
     zy, zx = _zone_cell(env, 0)
-    env.place(0, 2, zy, zx - 2, RIGHT)        # attacker -> (zy, zx-1)
-    env.place(0, 3, zy - 1, zx - 1, RIGHT)    # attacker -> (zy-1, zx)
-    env.place(0, 0, zy + 1, zx, LEFT)         # defender -> (zy+1, zx-1)
-    env.place(0, 1, 5, 5, RIGHT)              # other defender far away
+    env.place(0, 2, zy, zx - 2, RIGHT)
+    env.place(0, 3, zy - 1, zx - 1, RIGHT)
+    env.place(0, 0, zy + 1, zx, LEFT)
+    env.place(0, 1, 5, 5, RIGHT)
     act(env, S_, S_, S_, S_)
     assert env.alive[0].all()
-    assert env.progress[0, 0].item() == pytest.approx(cfg.conquest_rate * (2 - 1))
+    assert env.progress[0, 0].item() == pytest.approx(0.03)   # (0.6 - 0.2 - 0.1) x 0.1 s
 
 
-def test_conquest_drains_without_attackers():
+def test_empty_zone_drains():
     env = make()
     blank(env)
     env.place(0, 0, 10, 2, RIGHT)
-    env.place(0, 1, 30, 30, LEFT)
+    env.place(0, 1, 100, 30, LEFT)
     env.progress[0, 0] = 0.5
     act(env, S_, S_)
-    assert env.progress[0, 0].item() == pytest.approx(0.5 - env.cfg.conquest_decay)
+    assert env.progress[0, 0].item() == pytest.approx(0.49)
 
 
 def test_conquest_wins_round():
@@ -339,7 +443,7 @@ def test_elimination_and_draw():
 
 
 def test_timeout_is_draw():
-    env = make(max_steps=3)
+    env = make(max_time_s=0.3)
     for _ in range(2):
         info = act(env, S_, S_)
         assert not info["done"][0]
@@ -349,7 +453,7 @@ def test_timeout_is_draw():
 
 
 def test_reset_restores_spawn():
-    env = make(team_size=2, max_steps=2)
+    env = make(team_size=2, max_time_s=0.2)
     start = env.pos.clone()
     act(env, S_, S_, S_, S_)
     info = act(env, S_, S_, S_, S_)
@@ -483,8 +587,8 @@ def test_mirror_symmetry_under_mirrored_play(team_size):
     actions, every observation must stay identical between agent i and agent T+i
     for the whole round. Catches rotation, masking and ordering bugs."""
     torch.manual_seed(0)
-    env = make(team_size=team_size, n=8, explosion_radius=2, trail_ticks=200, dead_wall_ticks=30,
-               reaction_delay=2, turn_cooldown=1)
+    env = make(team_size=team_size, n=8, explosion_radius_m=4.0, wall_length_m=400.0, walls_stay_up_s=8.0,
+               rubber_m=5.0, reaction_delay=2, turn_cooldown=1)
     T = env.T
     for _ in range(80):
         codes, vec = env.observe()
@@ -499,7 +603,7 @@ def test_mirror_symmetry_under_mirrored_play(team_size):
 
 # ---------------------------------------------------------------- explosions
 def test_explosion_blows_hole_in_wall_that_was_hit():
-    env = make(explosion_radius=2)
+    env = make(explosion_radius_m=6.0)
     blank(env)
     for y in range(4, 17):                 # enemy wall: column x=12, rows 4..16
         env.set_cell(0, y, 12, 1)
@@ -517,7 +621,7 @@ def test_explosion_blows_hole_in_wall_that_was_hit():
 
 
 def test_explosion_disk_shape():
-    env = make(explosion_radius=2)
+    env = make(explosion_radius_m=6.0)
     blank(env)
     for y in range(5, 16):
         for x in range(13, 24):
@@ -534,7 +638,7 @@ def test_explosion_disk_shape():
 
 
 def test_explosion_never_breaks_rim():
-    env = make(explosion_radius=2)
+    env = make(explosion_radius_m=6.0)
     blank(env)
     for x in range(2, 9):
         env.set_cell(0, 1, x, 1)           # enemy wall right next to the rim
@@ -550,7 +654,7 @@ def test_explosion_never_breaks_rim():
 
 
 def test_explosion_spares_living_cycle_but_not_its_trail():
-    env = make(explosion_radius=2)
+    env = make(explosion_radius_m=6.0)
     blank(env)
     env.set_cell(0, 10, 12, RIM)           # something to crash into; blast centred on (10,12)
     env.place(0, 0, 10, 11, RIGHT)
@@ -563,7 +667,7 @@ def test_explosion_spares_living_cycle_but_not_its_trail():
 
 
 def test_head_on_both_explode():
-    env = make(explosion_radius=2)
+    env = make(explosion_radius_m=6.0)
     blank(env)
     env.place(0, 0, 10, 10, RIGHT)
     env.place(0, 1, 10, 12, LEFT)
@@ -577,7 +681,7 @@ def test_head_on_both_explode():
 
 
 def test_explosion_off_keeps_walls():
-    env = make(explosion_radius=0)
+    env = make(explosion_radius_m=0)
     blank(env)
     env.set_cell(0, 10, 12, 1)
     env.set_cell(0, 9, 12, 1)
@@ -589,10 +693,10 @@ def test_explosion_off_keeps_walls():
 
 
 # ---------------------------------------------------------------- breach usage (measurement)
-def _breach_setup(window=60):
+def _breach_setup(window=3.0):
     """Agent 0 crashes into an enemy wall (column x=12, owned by agent 2) and blows a hole
     at rows 8..12. Teammate agent 1 drives along row 9 toward the hole."""
-    env = make(team_size=2, explosion_radius=2, breach_window_ticks=window)
+    env = make(team_size=2, explosion_radius_m=6.0, breach_window_s=window)
     blank(env)
     for y in range(4, 17):
         env.set_cell(0, y, 12, 2)
@@ -618,7 +722,7 @@ def test_teammate_passing_through_hole_is_counted():
 
 
 def test_hole_used_too_late_is_not_counted():
-    env = _breach_setup(window=4)
+    env = _breach_setup(window=4 / 30)
     for _ in range(5):
         info = act(env, S_, S_, S_, S_)
     assert env.interior_pos(0, 1) == (9, 12)
@@ -627,7 +731,7 @@ def test_hole_used_too_late_is_not_counted():
 
 
 def test_enemy_passing_through_hole_counted_separately():
-    env = make(team_size=2, explosion_radius=2)
+    env = make(team_size=2, explosion_radius_m=6.0)
     blank(env)
     for y in range(4, 17):
         env.set_cell(0, y, 12, 2)
@@ -643,7 +747,7 @@ def test_enemy_passing_through_hole_counted_separately():
 
 
 def test_no_breach_from_own_wall_or_rim():
-    env = make(team_size=2, explosion_radius=2)
+    env = make(team_size=2, explosion_radius_m=6.0)
     blank(env)
     for y in range(4, 17):
         env.set_cell(0, y, 12, 1)          # teammate's wall
@@ -673,7 +777,7 @@ def test_reaction_delay_returns_old_view():
 
 
 def test_reaction_delay_restarts_with_round():
-    env = make(reaction_delay=2, max_steps=3)
+    env = make(reaction_delay=2, max_time_s=0.3)
     for _ in range(3):
         env.observe()
         info = act(env, S_, S_)
@@ -716,7 +820,7 @@ def test_no_cooldown_allows_instant_u_turn():
 
 def test_invariants_hold_during_random_play():
     torch.manual_seed(1)
-    env = make(team_size=3, n=16, explosion_radius=2, trail_ticks=60, dead_wall_ticks=10,
+    env = make(team_size=3, n=16, explosion_radius_m=4.0, wall_length_m=60.0, walls_stay_up_s=0.5, rubber_m=5.0,
                reaction_delay=2, turn_cooldown=1)
     for _ in range(300):
         env.observe()
@@ -746,7 +850,37 @@ def test_agent_id_off_removes_it():
 def test_old_checkpoint_configs_still_load():
     old = FortressConfig(team_size=2).to_dict()
     del old["agent_id_obs"]
-    old["defend_rate"] = 0.02                       # removed setting from the first version
+    old["trail_ticks"] = 200                        # removed setting from an earlier version
     cfg = FortressConfig.from_dict(old)
-    assert cfg.agent_id_obs is False and not hasattr(cfg, "defend_rate")
+    assert cfg.agent_id_obs is False and not hasattr(cfg, "trail_ticks")
     assert FortressConfig.from_dict(FortressConfig(team_size=2).to_dict()).agent_id_obs is True
+
+
+# ---------------------------------------------------------------- map to scale
+def test_map_scale_matches_the_real_game():
+    """Measured in Retrocycles: end to end 16.55 s, zone to zone 10.35 s (at 30 m/s)."""
+    cfg = FortressConfig()
+    env = FortressEnv(cfg, 1)
+    secs_per_cell = cfg.cell_m / cfg.cycle_speed
+    assert env.S * secs_per_cell == pytest.approx(16.55, abs=0.3)
+    centres = float(env.zone_center[0, 0] - env.zone_center[1, 0])
+    assert (centres - 2 * cfg.zone_radius) * secs_per_cell == pytest.approx(10.35, abs=0.5)
+    assert cfg.base_speed * cfg.ticks_per_step == 3000      # 1 cell per decision at 30 m/s
+
+
+def test_v_formation_spawn():
+    env = make(team_size=7)
+    P = env.P
+    pos = env.spawn_pos - P
+    lead = pos[0]
+    cy, cx = (env.zone_center[0] - P).tolist()
+    assert int(lead[0]) == int(cy) and int(lead[1]) == int(cx) + 2     # 5 m beside the zone centre
+    rel = (pos[:7] - lead).tolist()                                     # (dy, dx); +dy = behind team 0
+    assert rel[1][0] >= 1 and rel[2][0] >= 1 and rel[1][1] == -rel[2][1] != 0   # first pair behind, either side
+    for k in range(1, 6, 2):                                            # pairs mirror each other
+        assert rel[k][0] == rel[k + 1][0] and rel[k][1] == -rel[k + 1][1]
+    assert abs(rel[5][1]) > abs(rel[3][1]) > abs(rel[1][1])             # the V widens
+    assert all(int(d) == 0 for d in env.spawn_dir[:7]) and all(int(d) == 2 for d in env.spawn_dir[7:])
+    for k in range(7):                                                  # everyone starts in their own zone
+        y, x = env.spawn_pos[k].tolist()
+        assert int(env.zone_grid[y, x]) == 0

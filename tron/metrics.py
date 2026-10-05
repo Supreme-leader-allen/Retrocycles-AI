@@ -18,7 +18,7 @@ Coordination
                            possibly by sacrifice). Overlapping explosions in the same tick can
                            count a cell twice.
 - breaches_made            this team's cycles whose explosion destroyed at least one enemy wall cell
-- breaches_used            of those, how many a teammate drove through within breach_window_ticks
+- breaches_used            of those, how many a teammate drove through within breach_window_s
 - breach_passes            teammate entries into those destroyed cells (one cycle can pass several)
 - breach_passes_by_enemy   enemy entries into holes this team blew in the enemy's walls
                            Compare all of these against baseline_random: some passes happen by chance.
@@ -142,7 +142,7 @@ class MetricsTracker:
             a["kills"][:, k] += (killer_team == k).sum((1, 2)).float()
         # mechanics
         a["alive_frac"] += n_alive / T * active
-        spd = env.speed.view(N, 2, T).float() / 100.0 * env.cfg.ticks_per_step  # cells per step
+        spd = env.speed.view(N, 2, T).float() * env.cfg.mps_per_unit       # m/s
         a["speed_sum"] += (spd * alive).sum(2)
         a["wall"] += (env.near_wall.view(N, 2, T) & alive).sum(2).float()
         a["max_prog"] = torch.maximum(a["max_prog"], info["progress"].flip(1))

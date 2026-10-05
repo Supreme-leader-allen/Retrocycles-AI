@@ -45,9 +45,11 @@ Everything lives under `$OUT` (default `output/`, `/workspace/retrocycles_output
 **Mechanics / debugging:** `kills`, `deaths_self` / `deaths_enemy` / `deaths_rim` / `deaths_headon`, `survival`,
 `avg_speed` (cells/decision), `wall_ride_frac`, `turn_rate`, `turns_blocked`.
 
-Reference values (scripted bots, 7v7, 128 rounds): split-role bot `role_specialization` ≈ 0.32,
-`frac_defending` ≈ 0.18, `undefended_rate` ≈ 0.46, beats the all-attack heuristic 98% (all by conquest);
-the heuristic has `frac_defending` 0 and `undefended_rate` 1.0. `00_baseline.sh` re-measures these.
+Reference values (scripted bots, 7v7, 128 rounds, real-scale map): the all-attack `heuristic` beats the
+wiki-positions `split` team ~94% (by conquest). `split`: `role_specialization` ~0.42, `frac_defending` ~0.35,
+`undefended_rate` ~0.8, ~1.9 friendly-fire deaths per round; `heuristic`: ~0.07 / ~0.07 / 1.0.
+`00_baseline.sh` re-measures these. Note random cycles spawn inside their own zone, so their
+`frac_defending` is ~1 (they die there almost immediately).
 
 ## Training log (`logs/<label>_train.csv`): one row per iteration
 
@@ -57,7 +59,7 @@ the heuristic has `frac_defending` 0 and `undefended_rate` 1.0. `00_baseline.sh`
 | PPO health | `pg_loss`, `v_loss`, `entropy`, `approx_kl`, `clipfrac`, `grad_norm`, `explained_var`, `param_norm` | entropy collapsing to ~0 early = premature convergence; kl > 0.05 or clipfrac > 0.3 = lr too high; explained_var should rise above 0 |
 | values | `value_mean`, `return_mean`, `adv_std_raw`, `mean_reward` | |
 | reward parts | `rew_win`, `rew_conquest`, `rew_kill`, `rew_death` (mean ABSOLUTE value per sample, already scaled; signed means are ~0 because self-play rewards cancel between teams) | shaping should shrink to 0 as `shaping_scale` anneals; if shaping dwarfs `rew_win`, the agent optimises the shaping |
-| behaviour | `act_straight`, `act_left`, `act_right`, `alive_frac`, `turn_rate`, `avg_speed`, `survival` | a policy stuck at ~100% one action = collapse |
+| behaviour | `act_straight`, `act_left`, `act_right`, `alive_frac`, `turn_rate`, `avg_speed` (m/s), `survival` | a policy stuck at ~100% one action = collapse |
 | rounds | `rounds`, `round_steps`, `selfplay_draw`, `end_conquest`, `end_elimination`, `end_timeout` | the game strategy shifting from elimination to conquest is a finding |
 | **bug detector** | `side0_win` | self-play is the same policy on both sides, so this must hover around 0.5. Persistently far from it = an asymmetry bug |
 | deaths | `deaths_self`, `friendly_fire_deaths`, `deaths_enemy`, `deaths_rim`, `deaths_headon`, `kills` | |

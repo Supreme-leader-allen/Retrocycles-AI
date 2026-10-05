@@ -1,99 +1,204 @@
 """
-Game configuration for the Fortress simulator.
+Game configuration for the Fortress simulator, in real-world units.
 
-Units
+Every default is taken from Armagetron Advanced (which Retrocycles is based on):
+the "CVS Test Server: Fortress" configuration shipped with the game
+(config/examples/fortress_soccer.cfg + cvs_test/fortress_physics.cfg), its map
+Z-Man/fortress/for_old_clients-0.1.0.aamap.xml, and the engine's built-in
+defaults (src/tron/gCycleMovement.cpp, gCycle.cpp, gArena.cpp) where the
+server config does not override them. Measured in-game: end to end of the map
+16.55 s and zone to zone 10.35 s, consistent with 500 m at 30 m/s and
+320 m (400 m between zone centres minus two 40 m radii).
+
+Scale
 -----
-- Distance: grid cells. The arena is an S x S square of cells.
-- Time: ticks. One agent decision ("step") = ``ticks_per_step`` ticks.
-- Speed: hundredths of a cell per tick (integers, so movement is exact and
-  never depends on float rounding). A cycle moves one cell every time its
-  movement credit reaches 100. At ``base_speed=50`` and 2 ticks/step a cycle
-  moves exactly 1 cell per decision; at ``max_speed=100`` it moves 2.
+1 grid cell = ``cell_m`` = 3 m and 1 decision = ``decision_s`` = 0.1 s, so the
+base speed of 30 m/s is exactly one cell per decision. Each decision is split
+into ``ticks_per_step`` physics ticks; a cycle moves at most one cell per tick
+(max 90 m/s). Speeds are stored as integers: ``SPEED_UNIT`` credit = one cell.
 
-Rules modelled (Retrocycles / Armagetron "Fortress", simplified to a grid):
-- Cycles drive forward continuously, can turn 90 degrees left/right once per
-  decision, and die on entering any occupied cell (rim, any trail, any head).
-- Riding alongside a wall (an occupied cell directly to the left or right of
-  the head) accelerates the cycle up to ``max_speed``; away from walls it
-  decays back to ``base_speed``. This is Armagetron's "grinding" mechanic.
-- Every crash explodes: all trail cells (any team) within ``explosion_radius``
-  of the cell the cycle crashed into are destroyed, which can open a hole in
-  the wall that was hit. The rim is indestructible.
-- Trails are finite: a trail cell disappears ``trail_ticks`` after it was laid.
-  A dead cycle's whole trail disappears ``dead_wall_ticks`` after it died.
-- Each team owns a circular base zone. If more enemies than defenders are inside
-  it, progress grows by ``conquest_rate`` per extra attacker per step; with
-  equal numbers (or no attackers) it does not grow and drains by ``conquest_decay``. A team loses when its zone reaches progress 1.0 or when all of its
-  cycles are dead. Hitting ``max_steps`` is a draw.
+Rules modelled
+--------------
+- Cycles drive forward, turn 90 degrees left/right (4 arena axes), at most once
+  per decision (CYCLE_DELAY 0.1 s = one decision).
+- Walls are ``wall_length_m`` long (measured in distance driven, like
+  Armagetron) and a dead cycle's walls stay up ``walls_stay_up_s`` seconds.
+- Rubber: a cycle trying to drive into a wall is held in front of it and burns
+  rubber equal to the distance it would have travelled; it dies when the rubber
+  is gone. Rubber refills over ``rubber_time_s``. Head-on collisions kill at once.
+- Grinding: walls within ``wall_near_m`` on the left/right accelerate the cycle
+  (Armagetron's 1/distance formula). The rim does not accelerate (CYCLE_ACCEL_RIM 0).
+  Above base speed, speed decays by ``speed_decay_above`` x (excess) per second.
+- Every crash explodes: trail walls (any team, never the rim) within
+  ``explosion_radius_m`` of the crash point are destroyed.
+- Fortress: per second, a zone's capture progress changes by
+  conquest_rate x attackers - defend_rate x defenders - conquest_decay
+  (wiki: 1 attacker alone 5 s, 1 vs 1 never, 2 vs 0 2 s, 2 vs 1 3.3 s, 2 vs 2 10 s).
+  A team loses when its zone is captured or all its cycles are dead.
+- Spawn: each team's cycles start in a V ("wingmen") formation around a point
+  beside their own zone's centre, facing the enemy zone.
 
-Humanlike limits:
-- ``reaction_delay``: the observation a policy acts on is from that many
-  decisions ago (a human's reaction time). The simulation itself is not delayed.
-- ``turn_cooldown``: minimum decisions between two turns (0 = can turn every decision).
+Humanlike limits
+----------------
+- ``reaction_delay``: the policy acts on the view from that many decisions ago.
+- ``turn_cooldown``: extra decisions to wait between turns (0 = CYCLE_DELAY only).
 
-Not modelled (deliberately): rubber, brakes, continuous turning geometry,
-more than two teams. These are listed in README.md under "Simplifications".
+Not modelled: brakes, continuous geometry (walls are 3 m grid cells), rubber
+slowing the cycle down before contact, more than two teams.
 """
+import math
 from dataclasses import dataclass, asdict
 
-SPEED_UNIT = 100  # movement credit needed to advance one cell
+SPEED_UNIT = 3000  # movement credit needed to advance one cell
 
 
 @dataclass
 class FortressConfig:
     team_size: int = 7
-    arena_size: int = 0          # interior side length in cells; 0 = auto (35 + 10*team_size, odd).
-                                 # 7v7 -> 105: ~60 decisions (~6 s) from spawn to the enemy zone
-    ticks_per_step: int = 2
 
-    base_speed: int = 50         # 1/100 cell per tick
-    max_speed: int = 100
-    wall_accel: int = 4          # speed gained per tick while riding next to a wall
-    speed_decay: int = 2         # speed lost per tick when not next to a wall
+    # ---- scale ---------------------------------------------------------------
+    cell_m: float = 3.0               # metres per grid cell
+    decision_s: float = 0.1           # seconds per decision (= CYCLE_DELAY)
+    ticks_per_step: int = 3           # physics ticks per decision
 
-    trail_ticks: int = 200       # lifetime of a trail cell; 0 = trails never expire
-    dead_wall_ticks: int = 30    # a dead cycle's trail vanishes this long after death
-    explosion_radius: float = 2.0  # every crash removes all trail cells within this many cells
-                                   # of the crash point (never the rim); 0 = no explosions
+    # ---- map (for_old_clients-0.1.0.aamap.xml) --------------------------------
+    arena_m: float = 500.0            # square arena side
+    zone_radius_m: float = 40.0       # WIN_ZONE_INITIAL_SIZE 40
+    zone_offset_m: float = 50.0       # zone centre to its rim
+    spawn_side_m: float = 5.0         # spawn point is 5 m beside the zone centre
+    wingmen_back_m: float = 2.202896  # SPAWN_WINGMEN_BACK
+    wingmen_side_m: float = 2.75362   # SPAWN_WINGMEN_SIDE
+    spawn_jitter: int = 0             # random +- cells added to spawn x (the real game has none)
 
-    zone_radius: float = 0.0     # 0 = auto (8.5% of arena, min 3)
-    # Time scale: 1 decision ~= 0.1 s (so reaction_delay=2 ~= 200 ms human reaction time).
-    conquest_rate: float = 1 / 30   # progress per step per attacker IN EXCESS of the defenders:
-                                    # one undefended attacker captures in 30 steps (~3 s)
-    conquest_decay: float = 1 / 15  # progress drained per step when attackers <= defenders
-                                    # (incl. nobody there): full -> empty in ~1.5 s
+    # ---- cycle physics --------------------------------------------------------
+    cycle_speed: float = 30.0         # CYCLE_SPEED (m/s), fortress server
+    max_speed: float = 90.0           # grid limit (one cell per tick); Armagetron has no cap
+    cycle_accel: float = 20.0         # CYCLE_ACCEL, fortress server
+    accel_offset_m: float = 2.0       # CYCLE_ACCEL_OFFSET
+    wall_near_m: float = 6.0          # CYCLE_WALL_NEAR
+    accel_rim: bool = False           # CYCLE_ACCEL_RIM 0: the rim gives no boost
+    speed_decay_above: float = 0.1    # CYCLE_SPEED_DECAY_ABOVE (fraction of excess speed lost per s)
+    rubber_m: float = 5.0             # CYCLE_RUBBER, fortress server; 0 = die on contact
+    rubber_time_s: float = 10.0       # CYCLE_RUBBER_TIME: full refill time
+    wall_length_m: float = 400.0      # WALLS_LENGTH, fortress server; 0 = infinite
+    walls_stay_up_s: float = 8.0      # CYCLE_WALLS_STAY_UP_DELAY
+    explosion_radius_m: float = 4.0   # EXPLOSION_RADIUS engine default (the CVS server uses 2);
+                                      # 0 = no explosions
 
-    breach_window_ticks: int = 60  # measurement only: a hole counts as "used" if a cycle drives
-                                   # into it within this many ticks of the explosion
-    max_steps: int = 500         # decisions per round before it is called a draw
+    # ---- fortress zone (fortress_soccer.cfg), per second -----------------------
+    conquest_rate: float = 0.3        # FORTRESS_CONQUEST_RATE, per attacker
+    defend_rate: float = 0.2          # FORTRESS_DEFEND_RATE, per defender
+    conquest_decay: float = 0.1       # FORTRESS_CONQUEST_DECAY_RATE, always applied
 
-    # humanlike limits
-    reaction_delay: int = 2      # policy sees the game as it was this many decisions ago (0 = instant)
-    turn_cooldown: int = 0       # after a turn, further turns are ignored for this many decisions
+    # ---- round -----------------------------------------------------------------
+    max_time_s: float = 120.0         # round length limit (draw)
+    breach_window_s: float = 3.0      # measurement only: a hole counts as "used" if a cycle drives
+                                      # into it within this many seconds of the explosion
 
-    agent_id_obs: bool = True    # each cycle sees its own slot number (one-hot, 0..team_size-1), so a
-                                 # shared policy can settle on fixed roles (standard in MAPPO)
-    obs_radius: int = 10         # egocentric crop is (2r+1) x (2r+1)
-    vis_radius: float = 0.0      # >0: cycles further than this are hidden in the vector obs
-    spawn_jitter: int = 1        # random +-cells added to each spawn x position
+    # ---- humanlike limits --------------------------------------------------------
+    reaction_delay: int = 2           # decisions (0.2 s)
+    turn_cooldown: int = 0
+
+    # ---- observation ---------------------------------------------------------------
+    agent_id_obs: bool = True         # each cycle sees its own slot number (one-hot)
+    obs_radius: int = 10              # egocentric crop is (2r+1)^2 cells (r = 30 m)
+    vis_radius: float = 0.0           # >0: enemies further than this many cells are hidden
 
     def __post_init__(self):
-        if self.arena_size <= 0:
-            self.arena_size = 35 + 10 * self.team_size
-        if self.zone_radius <= 0:
-            self.zone_radius = max(3.0, round(0.085 * self.arena_size, 1))
         assert self.team_size >= 1
-        assert self.arena_size % 2 == 1, "arena_size must be odd so the map is exactly symmetric"
+        assert self.arena_size % 2 == 1, "arena must be an odd number of cells (exact symmetry)"
         assert 0 <= self.explosion_radius < self.pad, "explosion must fit inside the rim padding"
         assert self.reaction_delay >= 0 and self.turn_cooldown >= 0
-        assert self.base_speed > 0 and self.max_speed >= self.base_speed
-        assert self.max_speed * self.ticks_per_step <= 4 * SPEED_UNIT, "too fast for the grid"
-        spacing = self.arena_size / (self.team_size + 1)
-        assert spacing >= 2 * self.spawn_jitter + 2, "arena too small for this team size / jitter"
-        # zone centre sits zone_radius+3 from its rim; spawn row is zone_radius+2 further in
-        assert 2 * (2 * self.zone_radius + 5) + 4 < self.arena_size, "zones/spawn rows overlap"
+        assert 0 < self.base_speed <= self.max_speed_units <= SPEED_UNIT, "max one cell per tick"
+        assert self.zone_center_offset > self.zone_radius, "zone must not overlap the rim"
+        back = max(self.wingmen(k)[0] for k in range(self.team_size))
+        assert self.zone_center_offset - back >= 1, "spawn formation reaches the rim"
 
-    # ---- derived -----------------------------------------------------------
+    # ---- derived (grid units) --------------------------------------------------
+    @property
+    def tick_s(self) -> float:
+        return self.decision_s / self.ticks_per_step
+
+    @property
+    def arena_size(self) -> int:
+        n = int(round(self.arena_m / self.cell_m))
+        return n if n % 2 == 1 else n + 1
+
+    @property
+    def zone_radius(self) -> float:
+        return self.zone_radius_m / self.cell_m
+
+    @property
+    def zone_center_offset(self) -> int:
+        # cell index of the zone centre counted from its rim (cell i spans [i, i+1) * cell_m)
+        return int(round(self.zone_offset_m / self.cell_m - 0.5))
+
+    def wingmen(self, k: int):
+        """(cells back, cells to the side, side sign) of team slot k relative to the spawn point
+        (Armagetron gSpawnPoint::FindPos: slots alternate sides, each pair one step further out)."""
+        if k == 0:
+            return 0, 0, 0
+        away = (k + 1) // 2
+        sign = 1 if k % 2 == 1 else -1
+        back = max(1, int(round(away * self.wingmen_back_m / self.cell_m)))
+        side = max(1, int(round(away * self.wingmen_side_m / self.cell_m)))
+        return back, side, sign
+
+    @property
+    def mps_per_unit(self) -> float:
+        """m/s represented by one speed unit (cells/tick * SPEED_UNIT)."""
+        return self.cell_m / self.tick_s / SPEED_UNIT
+
+    @property
+    def base_speed(self) -> int:
+        return int(round(self.cycle_speed / self.mps_per_unit))
+
+    @property
+    def max_speed_units(self) -> int:
+        return int(round(self.max_speed / self.mps_per_unit))
+
+    def accel_units(self, k: int) -> float:
+        """Speed units gained per tick from one wall k cells to the side (wall surface at
+        (k - 0.5) cells), using Armagetron's acceleration falloff with distance."""
+        d = (k - 0.5) * self.cell_m
+        if d >= self.wall_near_m:
+            return 0
+        off, near = self.accel_offset_m, self.wall_near_m
+        f = (1 / (d + off) - 1 / (near + off)) / (1 / off - 1 / (near + off))
+        return self.cycle_accel * f * self.tick_s / self.mps_per_unit
+
+    @property
+    def accel_reach(self) -> int:
+        """How many cells to the side can still accelerate."""
+        k = 1
+        while self.accel_units(k + 1) > 0:
+            k += 1
+        return k
+
+    @property
+    def decay_per_tick(self) -> float:
+        return self.speed_decay_above * self.tick_s
+
+    @property
+    def wall_length_cells(self) -> int:
+        return int(round(self.wall_length_m / self.cell_m)) if self.wall_length_m > 0 else 0
+
+    @property
+    def walls_stay_up_ticks(self) -> int:
+        return int(round(self.walls_stay_up_s / self.tick_s))
+
+    @property
+    def explosion_radius(self) -> float:
+        return self.explosion_radius_m / self.cell_m
+
+    @property
+    def max_steps(self) -> int:
+        return int(round(self.max_time_s / self.decision_s))
+
+    @property
+    def breach_window_ticks(self) -> int:
+        return int(round(self.breach_window_s / self.tick_s))
+
     @property
     def num_agents(self) -> int:
         return 2 * self.team_size
@@ -112,9 +217,10 @@ class FortressConfig:
 
     @classmethod
     def from_dict(cls, d):
-        """Rebuild a config saved in a checkpoint, including ones saved by older code:
-        settings added since then get the value that code effectively used, removed ones are dropped."""
+        """Rebuild a config saved in a checkpoint. Settings this version doesn't know (from older
+        code) are dropped; settings added since get today's defaults, except agent_id_obs, which
+        older checkpoints were trained without."""
         d = dict(d)
-        d.setdefault("agent_id_obs", False)      # added after the first pilots
+        d.setdefault("agent_id_obs", False)
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in d.items() if k in known})

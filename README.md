@@ -54,21 +54,30 @@ SAMPLES=2e9 bash experiments/run_all.sh   # baseline, main, 4 ablations, final e
 
 ## The game (what the simulator models)
 
+Every value comes from Armagetron Advanced, which Retrocycles is based on: the fortress server
+config shipped with the game (`fortress_soccer.cfg`, `cvs_test/fortress_physics.cfg`), its map
+(`Z-Man/fortress/for_old_clients-0.1.0.aamap.xml`), the engine defaults in its source code, and the
+wiki's Fortress page. In-game measurements (end to end 16.55 s, zone to zone 10.35 s) match the
+simulator's 16.7 s and 10.7 s. All settings, with sources, are in `tron/config.py`.
+
+Scale: **1 cell = 3 m, 1 decision = 0.1 s** (30 m/s = one cell per decision), 3 physics ticks per decision.
+
 | Rule | Implementation |
 |---|---|
-| Movement | grid; each decision: straight / turn left / turn right; 2 ticks per decision |
-| Crashing | entering any occupied cell (rim, any trail, any head) kills; two cycles entering the same cell both die |
-| Speed | 1 cell/decision normally; riding alongside a wall accelerates to 2 cells/decision ("grinding") |
-| Explosions | every crash (including head-ons) destroys all trail cells within 2 cells of the crash point, opening holes in walls; the rim is never broken |
-| Humanlike limits | the policy sees the game 2 decisions late (`reaction_delay`); optional `turn_cooldown` between turns (off by default) |
-| Trails | each cell lasts `trail_ticks` (200); a dead cycle's trail vanishes 30 ticks after death |
-| Fortress | each team has a circular zone. If attackers outnumber defenders inside it, it is captured at 1/30 per step per extra attacker (one undefended attacker: 30 steps ~ 3 s); with equal numbers or no attackers it drains (empty from full in ~1.5 s). Time scale: 1 decision ~ 0.1 s |
-| Winning | conquer the enemy zone or eliminate every enemy cycle; 500 decisions = draw |
+| Map | 500 x 500 m (167 x 167 cells); zones radius 40 m, centres 50 m from the rim |
+| Spawn | V ("wingmen") formation beside your zone centre, facing the enemy (SPAWN_WINGMEN_BACK 2.2 m, SIDE 2.75 m) |
+| Movement | straight / turn left / turn right each decision (4 arena axes, CYCLE_DELAY 0.1 s) |
+| Speed | 30 m/s; walls within 6 m to the side accelerate you (CYCLE_ACCEL 20, Armagetron's 1/distance falloff; the rim does not); boosts decay by 10% of the excess per second; max 90 m/s |
+| Rubber | 5 m: a cycle driving into a wall is held in front of it and burns rubber equal to the distance it would have driven; dies when it runs out; refills in 10 s. Head-on collisions kill at once |
+| Walls | 400 m long (by distance driven); a dead cycle's walls stay up 8 s |
+| Explosions | every death destroys trail walls within 4 m of the crash point (never the rim) |
+| Fortress | capture progress per second = 0.3 x attackers - 0.2 x defenders - 0.1 (1 attacker alone: 5 s; 1 vs 1: never; 2 vs 0: 2 s; 2 vs 1: 3.3 s; 2 vs 2: 10 s) |
+| Winning | capture the enemy zone or eliminate every enemy cycle; 120 s = draw |
+| Humanlike limits | the policy sees the game 2 decisions (0.2 s) late; optional extra turn cooldown (off) |
 
 ### Simplifications vs real Retrocycles
-Grid movement instead of continuous; no rubber, no brakes; two teams only;
-wall acceleration only from walls directly beside the head. These are stated
-limitations for the paper, not bugs. All are in `tron/config.py`.
+3 m grid instead of continuous movement; rubber holds you in front of a wall rather than slowing you
+as you approach; no brakes; two teams only; max 90 m/s. These are stated limitations for the paper.
 
 ## Method
 
@@ -113,6 +122,6 @@ Wall breaching: `enemy_walls_blasted`, `breaches_made` (deaths that blew a hole 
 Outcome/mechanics: `result`, `end_reason`, `round_steps`, `kills`, `deaths_*`, `survival`,
 `avg_speed`, `wall_ride_frac`, `max_enemy_progress`. Definitions are in `tron/metrics.py`.
 
-Reference point: a hand-coded team that splits roles (`split`) beats an all-attack
-heuristic team ~98% of the time, every win by conquest. That shows division of labour pays off in this game,
-so it is something a learning team has a reason to discover.
+Reference points (7v7, 128 rounds): the all-attack `heuristic` team (fanning out into flank lanes)
+beats the hand-coded wiki-positions `split` team ~94% of the time, all by conquest. Naive role-splitting
+loses to a coordinated rush, so a learned team has to discover *effective* defence, not just presence.

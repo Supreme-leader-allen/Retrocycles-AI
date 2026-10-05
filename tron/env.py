@@ -28,6 +28,11 @@ Directions: 0 up (-y), 1 right (+x), 2 down (+y), 3 left (-x).
 
 Death causes (``death_cause``): -1 alive, -2 rim, -3 head-on collision with
 another cycle entering the same cell, 0..A-1 the owner of the trail hit.
+
+Physics (real-world values in config.py): rubber holds a cycle in front of a
+wall until it is used up; walls within 2 cells to the side accelerate; trail
+cells are stamped with the owner's odometer (cells driven) so wall length is
+a distance, as in Armagetron.
 """
 import torch
 
@@ -47,10 +52,18 @@ OCC_EMPTY, OCC_RIM, OCC_OWN, OCC_TEAM, OCC_ENEMY, OCC_TEAM_HEAD, OCC_ENEMY_HEAD 
 ZONE_NONE, ZONE_OWN, ZONE_ENEMY = range(3)
 NUM_CELL_CODES = 7 * 3
 
-SELF_FEATURES = 16
+SELF_FEATURES = 17
 OTHER_FEATURES = 11
 
 _DIRS = [[-1, 0], [0, 1], [1, 0], [0, -1]]  # (dy, dx)
+
+
+def conquest_delta(cfg, att, dfn):
+    """Change in a zone's capture progress over one decision, given the number of attackers
+    and defenders inside it (Armagetron: rate x attackers - defend x defenders - decay, per s)."""
+    d = (cfg.conquest_rate * att - cfg.defend_rate * dfn - cfg.conquest_decay) * cfg.decision_s
+    # e.g. 1 vs 1 is exactly 0 (0.3 - 0.2 - 0.1) but lands at ~1e-9 in floats: snap it
+    return d * (d.abs() > 1e-6)
 
 
 class FortressEnv:
@@ -79,7 +92,7 @@ class FortressEnv:
         self.base_owner = base
 
         r = cfg.zone_radius
-        d = int(round(r + 3.0))  # integer centres keep the two zones exactly mirror-symmetric
+        d = cfg.zone_center_offset  # integer centres keep the two zones exactly mirror-symmetric
         c = P + (S - 1) // 2
         far = P + S - 1
         # team 0 defends the bottom zone, team 1 the top zone (point-symmetric)
@@ -95,14 +108,18 @@ class FortressEnv:
         self.zone_flat = zone.view(-1).long()
 
         # ---- spawn layout ---------------------------------------------------
+        # V (wingmen) formation around a point beside the zone centre, facing the enemy.
+        # Team 0 faces up (-y), so 'back' is +y; slot sides alternate.
         T = self.T
-        xs = [P + int(round((i + 1) * S / (T + 1))) for i in range(T)]
-        y0 = int(round(float(self.zone_center[0, 0]) - r - 2))
+        ly = far - d
+        lx = c + int(round(cfg.spawn_side_m / cfg.cell_m))
         spawn = []
-        for x in xs:
-            spawn.append([y0, x])
-        for x in xs:  # team 1 = 180 degree rotation of team 0
-            spawn.append([2 * P + S - 1 - y0, 2 * P + S - 1 - x])
+        for k in range(T):
+            back, side, sign = cfg.wingmen(k)
+            spawn.append([ly + back, lx + sign * side])
+        for y, x in list(spawn):  # team 1 = 180 degree rotation of team 0
+            spawn.append([2 * P + S - 1 - y, 2 * P + S - 1 - x])
+        assert len({tuple(p) for p in spawn}) == len(spawn), "spawn cells overlap"
         self.spawn_pos = torch.tensor(spawn, device=dev, dtype=torch.long)     # (A, 2)
         self.spawn_dir = torch.tensor([0] * T + [2] * T, device=dev, dtype=torch.long)
 
@@ -132,6 +149,11 @@ class FortressEnv:
             order.append(mates + foes)
         self.other_order = torch.tensor(order, device=dev, dtype=torch.long)    # (A, A-1)
 
+        # grinding: speed units per tick from a wall k cells to the side (index 0 unused)
+        self.accel_reach = cfg.accel_reach
+        self.accel_by_dist = torch.tensor([0.0] + [cfg.accel_units(k) for k in range(1, self.accel_reach + 1)],
+                                          device=dev, dtype=torch.float32)
+
         # explosion disk: every cell within explosion_radius of the crash point
         er = cfg.explosion_radius
         ri = int(er)
@@ -149,8 +171,9 @@ class FortressEnv:
         self.stamp = torch.zeros((N, G, G), dtype=torch.int32, device=dev)
         self.pos = torch.zeros((N, A, 2), dtype=torch.long, device=dev)
         self.dir = torch.zeros((N, A), dtype=torch.long, device=dev)
-        self.speed = torch.zeros((N, A), dtype=torch.long, device=dev)
-        self.credit = torch.zeros((N, A), dtype=torch.long, device=dev)
+        # speed and movement credit are float speed units (SPEED_UNIT credit = one cell)
+        self.speed = torch.zeros((N, A), dtype=torch.float32, device=dev)
+        self.credit = torch.zeros((N, A), dtype=torch.float32, device=dev)
         self.alive = torch.zeros((N, A), dtype=torch.bool, device=dev)
         self.death_tick = torch.zeros((N, A), dtype=torch.long, device=dev)
         self.death_cause = torch.full((N, A), CAUSE_ALIVE, dtype=torch.long, device=dev)
@@ -158,6 +181,10 @@ class FortressEnv:
         self.tick = torch.zeros(N, dtype=torch.long, device=dev)
         self.steps = torch.zeros(N, dtype=torch.long, device=dev)
         self.near_wall = torch.zeros((N, A), dtype=torch.bool, device=dev)
+        self.odo = torch.zeros((N, A), dtype=torch.long, device=dev)        # cells driven this round
+        self.rubber = torch.zeros((N, A), dtype=torch.float32, device=dev)  # metres of rubber left
+        self.rubber_used = torch.zeros((N, A), dtype=torch.float32, device=dev)  # metres burnt, last step
+        self.pressing = torch.zeros((N, A), dtype=torch.bool, device=dev)  # held against a wall by rubber
         self.moved = torch.zeros((N, A), dtype=torch.long, device=dev)  # cells moved in the last step
         self.blasted = torch.zeros((N, A), dtype=torch.long, device=dev)  # enemy wall cells destroyed by this cycle's explosion, last step
         # breach tracking (measurement only, does not affect play). A "breach" is the set of
@@ -207,6 +234,10 @@ class FortressEnv:
         self.steps[idx] = 0
         self.near_wall[idx] = False
         self.moved[idx] = 0
+        self.odo[idx] = 0
+        self.rubber[idx] = cfg.rubber_m
+        self.pressing[idx] = False
+        self.rubber_used[idx] = 0.0
         self.breach_by[idx] = -1
         self.breach_tick[idx] = 0
         self.breach_made[idx] = False
@@ -240,6 +271,7 @@ class FortressEnv:
 
         self.moved.zero_()
         self.blasted.zero_()
+        self.rubber_used.zero_()
         for _ in range(cfg.ticks_per_step):
             self._tick()
         self._clear_walls()
@@ -254,15 +286,11 @@ class FortressEnv:
             in_k = zone_of == k
             att[:, k] = (in_k & (self.team != k)).sum(1).float()
             dfn[:, k] = (in_k & (self.team == k)).sum(1).float()
-        # capture needs MORE attackers than defenders; otherwise progress drains
-        excess = att - dfn
-        delta = torch.where(excess > 0, cfg.conquest_rate * excess,
-                            torch.full_like(excess, -cfg.conquest_decay))
-        self.progress = (self.progress + delta).clamp(0.0, 1.0)
+        self.progress = (self.progress + conquest_delta(cfg, att, dfn)).clamp(0.0, 1.0)
 
         # ---- round outcome ---------------------------------------------------
         team_alive = self.alive.view(self.N, 2, self.T).any(2)                  # (N, 2)
-        conquered = self.progress >= 1.0 - 1e-5   # float sums of 1/30 can land just under 1
+        conquered = self.progress >= 1.0 - 1e-5   # float sums can land just under 1
         lost = conquered | ~team_alive
         timeout = self.steps >= cfg.max_steps
         done = lost.any(1) | timeout
@@ -292,6 +320,7 @@ class FortressEnv:
             "turned": self.turned.clone(),
             "turns_blocked": self.turns_blocked.clone(),
             "blasted": self.blasted.clone(),  # enemy wall cells each dying cycle's explosion destroyed
+            "rubber_used": self.rubber_used.clone(),  # metres of rubber burnt this step
             # cumulative for the round, per cycle that exploded:
             "breach_made": self.breach_made.clone(),
             "breach_used": self.breach_used.clone(),
@@ -306,8 +335,9 @@ class FortressEnv:
         owner_flat = self.owner.view(N, -1)
 
         self.credit = torch.where(self.alive, self.credit + self.speed, self.credit)
-        move = self.alive & (self.credit >= SPEED_UNIT)
-        self.credit = self.credit - SPEED_UNIT * move.long()
+        # a cycle held against a wall tries to move again every tick
+        move = self.alive & ((self.credit >= SPEED_UNIT) | self.pressing)
+        self.credit = torch.where(move, (self.credit - SPEED_UNIT).clamp(min=0), self.credit)
 
         step = self.dirs[self.dir] * move.unsqueeze(-1).long()                  # (N, A, 2)
         new = self.pos + step
@@ -319,35 +349,61 @@ class FortressEnv:
         same &= ~torch.eye(A, dtype=torch.bool, device=self.device)
         headon = same.any(2)
 
-        crash = hit | headon
+        # rubber: a cycle blocked by a wall is held in place and burns the distance it would
+        # have driven; it only dies once the rubber is gone. Head-on collisions are fatal.
+        held = torch.zeros_like(hit)
+        if cfg.rubber_m > 0:
+            burn = self.speed * cfg.mps_per_unit * cfg.tick_s                        # metres this tick
+            blocked = hit & ~headon
+            held = blocked & (self.rubber - burn > 1e-6)
+            self.rubber = torch.where(blocked, self.rubber - burn, self.rubber)
+            self.rubber_used += torch.where(blocked, burn, torch.zeros_like(burn))
+            # keep pressing: try again every tick while held, without banking movement credit
+            self.credit = torch.where(held, torch.zeros_like(self.credit), self.credit)
+            regen = cfg.rubber_m / cfg.rubber_time_s * cfg.tick_s
+            self.rubber = torch.where(self.alive & ~blocked, (self.rubber + regen).clamp(max=cfg.rubber_m),
+                                      self.rubber)
+        self.pressing = held
+
+        crash = (hit & ~held) | headon
         cause = torch.where(hit, target, torch.full_like(target, CAUSE_HEADON))
         self.alive &= ~crash
         self.death_tick = torch.where(crash, self.tick.unsqueeze(1).expand(N, A), self.death_tick)
         self.death_cause = torch.where(crash, cause, self.death_cause)
 
-        ok = move & ~crash
+        ok = move & ~crash & ~held
         self.pos = torch.where(ok.unsqueeze(-1), new, self.pos)
         self.moved += ok.long()
+        self.odo += ok.long()
         n_i, a_i = ok.nonzero(as_tuple=True)
         if n_i.numel():
             self._track_breach_passes(n_i, a_i, lin)
             flat = n_i * G * G + lin[n_i, a_i]
             self.owner.view(-1)[flat] = a_i.to(torch.int16)
-            self.stamp.view(-1)[flat] = self.tick[n_i].to(torch.int32)
+            self.stamp.view(-1)[flat] = self.odo[n_i, a_i].to(torch.int32)
 
         if self.blast_off.numel():
             self._explode(crash, lin)
 
-        # wall riding: an occupied cell directly left or right of the head
+        # grinding: the nearest wall within reach on each side accelerates (rim only if accel_rim);
+        # above base speed, speed decays by a fraction of the excess
         plin = self.pos[:, :, 0] * G + self.pos[:, :, 1]
-        left = plin + self.dir_lin[(self.dir + 3) % 4]
-        right = plin + self.dir_lin[(self.dir + 1) % 4]
-        near = (owner_flat.gather(1, left) != EMPTY) | (owner_flat.gather(1, right) != EMPTY)
-        near &= self.alive
-        faster = (self.speed + cfg.wall_accel).clamp(max=cfg.max_speed)
-        slower = (self.speed - cfg.speed_decay).clamp(min=cfg.base_speed)
-        self.speed = torch.where(self.alive, torch.where(near, faster, slower), self.speed)
-        self.near_wall = near
+        gain = torch.zeros_like(self.speed)
+        for side in (3, 1):  # left, right
+            dl = self.dir_lin[(self.dir + side) % 4]
+            found = torch.zeros_like(self.alive)
+            for k in range(1, self.accel_reach + 1):
+                o = owner_flat.gather(1, (plin + k * dl).clamp(0, G * G - 1))
+                wall = (o >= 0) | ((o == RIM) if cfg.accel_rim else torch.zeros_like(found))
+                first = wall & ~found
+                gain = gain + first.float() * self.accel_by_dist[k]
+                found |= (o != EMPTY)            # anything in between blocks walls further out
+        gain = gain * self.alive.float()
+        excess = (self.speed - cfg.base_speed).clamp(min=0)
+        decay = excess * cfg.decay_per_tick
+        new_speed = (self.speed + gain - decay).clamp(cfg.base_speed, cfg.max_speed_units)
+        self.speed = torch.where(self.alive, new_speed, self.speed)
+        self.near_wall = gain > 0
 
     def _track_breach_passes(self, n_i, a_i, lin):
         """Movers (n_i, a_i) are entering cells lin[n_i, a_i]: count entries into fresh breaches."""
@@ -392,18 +448,19 @@ class FortressEnv:
         flat[head] = la.to(torch.int16)
 
     def _clear_walls(self):
-        """Expire old trail cells and remove the trails of cycles that died long enough ago."""
+        """Shorten walls to wall_length (distance driven since a cell was laid) and remove the
+        walls of cycles that died more than walls_stay_up ago."""
         cfg = self.cfg
         N = self.N
         o = self.owner.long()
         trail = o >= 0
+        oc = o.clamp(min=0).view(N, -1)
         clear = torch.zeros_like(trail)
-        if cfg.trail_ticks > 0:
-            age = self.tick.view(N, 1, 1) - self.stamp.long()
-            clear |= trail & (age >= cfg.trail_ticks)
-        gone = ~self.alive & (self.tick.unsqueeze(1) - self.death_tick >= cfg.dead_wall_ticks)  # (N, A)
-        owner_gone = gone.gather(1, o.clamp(min=0).view(N, -1)).view_as(trail)
-        clear |= trail & owner_gone
+        if cfg.wall_length_cells > 0:
+            age = self.odo.gather(1, oc).view_as(trail) - self.stamp.long()
+            clear |= trail & (age >= cfg.wall_length_cells)
+        gone = ~self.alive & (self.tick.unsqueeze(1) - self.death_tick >= cfg.walls_stay_up_ticks)  # (N, A)
+        clear |= trail & gone.gather(1, oc).view_as(trail)
         # never erase the cell a living cycle is sitting on
         n_i, a_i = self.alive.nonzero(as_tuple=True)
         clear.view(N, -1)[n_i, self.pos[n_i, a_i, 0] * self.G + self.pos[n_i, a_i, 1]] = False
@@ -498,7 +555,7 @@ class FortressEnv:
         alive_team = self.alive.view(N, 2, self.T).float().mean(2)               # (N, 2)
         mates_alive = alive_team.gather(1, team_of)
         foes_alive = alive_team.gather(1, 1 - team_of)
-        speed_n = (self.speed - cfg.base_speed).float() / max(1, cfg.max_speed - cfg.base_speed)
+        speed_n = (self.speed - cfg.base_speed).float() / max(1, cfg.max_speed_units - cfg.base_speed)
         rays = self.rays().float() / S
         t_frac = (self.steps.float() / cfg.max_steps).unsqueeze(1).expand(N, A)
         self_feat = torch.stack([
@@ -506,7 +563,8 @@ class FortressEnv:
             oz_f / S, oz_r / S, ez_f / S, ez_r / S, in_own, in_foe,
             prog_own, prog_foe, mates_alive, foes_alive,
             rays[..., 0], rays[..., 1], rays[..., 2],
-        ], dim=-1)                                                                # (N, A, 16)
+            self.rubber / cfg.rubber_m if cfg.rubber_m > 0 else torch.ones_like(speed_n),
+        ], dim=-1)                                                                # (N, A, 17)
 
         # ---- other agents (pairwise, observer i -> other j) --------------------
         dy = posf[:, None, :, 0] - posf[:, :, None, 0]                          # (N, i, j)
@@ -574,7 +632,7 @@ class FortressEnv:
         if ((lin.unsqueeze(2) == lin.unsqueeze(1)) & both).any():
             errs.append("two living cycles on the same cell")
         live_speed = self.speed[self.alive]
-        if ((live_speed < cfg.base_speed) | (live_speed > cfg.max_speed)).any():
+        if ((live_speed < cfg.base_speed) | (live_speed > cfg.max_speed_units)).any():
             errs.append("speed out of range")
         if ((self.progress < 0) | (self.progress > 1)).any():
             errs.append("conquest progress out of [0, 1]")
@@ -601,18 +659,20 @@ class FortressEnv:
         self.pos[n, agent, 0] = y
         self.pos[n, agent, 1] = x
         self.dir[n, agent] = d
-        self.speed[n, agent] = self.cfg.base_speed if speed is None else speed
+        self.speed[n, agent] = float(self.cfg.base_speed if speed is None else speed)
         self.credit[n, agent] = 0
         self.alive[n, agent] = True
         self.death_cause[n, agent] = CAUSE_ALIVE
         self.owner[n, y, x] = agent
-        self.stamp[n, y, x] = int(self.tick[n])
+        self.stamp[n, y, x] = int(self.odo[n, agent])
+        self.rubber[n, agent] = self.cfg.rubber_m
+        self.pressing[n, agent] = False
 
     def set_cell(self, n: int, y: int, x: int, value: int, interior=True):
         if interior:
             y, x = y + self.P, x + self.P
         self.owner[n, y, x] = value
-        self.stamp[n, y, x] = int(self.tick[n])
+        self.stamp[n, y, x] = int(self.odo[n, value]) if value >= 0 else 0
 
     def cell(self, n: int, y: int, x: int, interior=True) -> int:
         if interior:
