@@ -32,10 +32,11 @@ def policy_controller(model, greedy=False):
 def scripted_controller(name):
     if name == "random":
         return lambda env, codes, vec: random_actions(env)
+    # bots read the true game state, so their actions are delayed like the policy's view
     if name == "heuristic":
-        return lambda env, codes, vec: heuristic_actions(env, split_roles=False)
+        return lambda env, codes, vec: env.delay_actions(heuristic_actions(env, split_roles=False), name)
     if name == "split":
-        return lambda env, codes, vec: heuristic_actions(env, split_roles=True)
+        return lambda env, codes, vec: env.delay_actions(heuristic_actions(env, split_roles=True), name)
     raise ValueError(f"unknown controller {name!r}")
 
 

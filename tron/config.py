@@ -100,6 +100,8 @@ class FortressConfig:
     turn_cooldown: int = 0
 
     # ---- observation ---------------------------------------------------------------
+    pending_actions_obs: bool = True  # the policy sees its own last reaction_delay actions (a player
+                                      # knows what they just pressed even if the screen hasn't caught up)
     agent_id_obs: bool = True         # each cycle sees its own slot number (one-hot)
     obs_radius: int = 10              # egocentric crop is (2r+1)^2 cells (r = 30 m)
     vis_radius: float = 0.0           # >0: enemies further than this many cells are hidden
@@ -222,5 +224,6 @@ class FortressConfig:
         older checkpoints were trained without."""
         d = dict(d)
         d.setdefault("agent_id_obs", False)
+        d.setdefault("pending_actions_obs", False)
         known = {f for f in cls.__dataclass_fields__}
         return cls(**{k: v for k, v in d.items() if k in known})

@@ -189,7 +189,7 @@ class PPOTrainer:
                 act[:M, T:] = Categorical(logits=ol).sample().view(M, T)
             if self.n_bot_envs:
                 lo, hi = self.bot_lo, self.bot_hi
-                bot = heuristic_actions(env, split_roles=self.bot_split)
+                bot = env.delay_actions(heuristic_actions(env, split_roles=self.bot_split), "train_bots")
                 act[lo:hi, T:] = bot[lo:hi, T:]
 
             alive0 = env.alive.clone()

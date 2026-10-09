@@ -89,8 +89,8 @@ own zone at the bottom, enemy zone at the top (team 1 is rotated 180°). Also `z
   bots measure in-distribution skill, not generalisation. The research comparisons are the coordination
   metrics and head-to-heads between runs (`99_evaluate.sh`), which no run trained against.
 
-- Scripted bots read the game state directly, so they have **no reaction delay**; the trained policy plays
-  with `reaction_delay=2` decisions. Wins against bots are therefore against a slightly faster-reacting opponent.
+- Scripted bots read the true game state but their actions are delayed by the same `reaction_delay` as the
+  policy's observations (`env.delay_actions`), so both sides react ~0.2 s late.
 - `breaches_used` counts entering a cell that used to be enemy wall; it does not verify the cycle came out
   the far side. Some passes happen by chance: always compare to the baselines.
 - Overlapping explosions in the same tick can count a destroyed cell twice in `enemy_walls_blasted`.

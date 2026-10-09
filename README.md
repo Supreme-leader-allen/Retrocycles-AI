@@ -84,8 +84,8 @@ as you approach; no brakes; two teams only; max 90 m/s. These are stated limitat
 - **Parameter sharing:** one network controls all 14 cycles; observations are egocentric.
 - **Observation:** 21x21 egocentric map (walls, own/team/enemy trails and heads, zones)
   + every other cycle's relative position, heading, speed and zone + conquest progress + free-space rays.
-- **Reward:** +1 win / -1 loss shared by the whole team, plus annealed shaping
-  (conquest progress, kills, individual death penalty) that fades to 0 over 4e8 samples.
+- **Reward:** +1 win / -1 loss shared by the whole team, a permanent individual death penalty (-0.5),
+  plus conquest and kill shaping that fades to 0 over 4e8 samples.
 - **Credit after death:** a cycle's episode is the whole round, so a cycle that dies still
   receives its team's eventual result (actions that helped the team before dying get credit).
 - **Self-play + opponent pool + scripted opponents:** 25% of rounds are played against frozen past snapshots and

@@ -6,10 +6,13 @@ assignment problem rather than 7 independent agents.
     win           +win to the winning team, -win to the losing team, 0 on a draw
     conquest      (shaping) progress gained on the enemy zone minus progress lost on your own
     kill          (shaping) per enemy death minus per ally death
-    death         (shaping, individual) penalty to the cycle that crashed
+    death         (individual, NOT annealed) penalty to the cycle that crashed. Losing a
+                  player is a real cost in Fortress, and with credit after death a cycle
+                  otherwise has almost no individual reason to stay alive in 7v7: the
+                  real-physics pilot lost ~5 of 7 cycles per round to its own walls.
 
-Shaping terms are multiplied by ``scale`` (annealed from 1 -> 0 by the trainer)
-so the final policy is optimised for winning, not for the shaping.
+Conquest and kill shaping are multiplied by ``scale`` (annealed from 1 -> 0 by the
+trainer) so the final policy is optimised for winning, not for the shaping.
 """
 from dataclasses import dataclass, asdict
 
@@ -21,7 +24,8 @@ class RewardConfig:
     win: float = 1.0
     conquest: float = 1.0
     kill: float = 0.1
-    death: float = 0.1
+    death: float = 0.5
+    death_anneal: bool = False    # True: the death penalty fades out with the shaping too
     anneal_samples: float = 4e8   # agent-steps until shaping reaches 0; <=0 disables annealing
 
     def scale(self, samples: float) -> float:
@@ -59,7 +63,7 @@ def compute_rewards(info: dict, team: torch.Tensor, T: int, rcfg: RewardConfig, 
         "win": win_t[:, team],
         "conquest": conq_t[:, team],
         "kill": kill_t[:, team],
-        "death": -scale * rcfg.death * info["died"].float(),
+        "death": -(scale if rcfg.death_anneal else 1.0) * rcfg.death * info["died"].float(),
     }
     r = parts["win"] + parts["conquest"] + parts["kill"] + parts["death"]
     return r, parts

@@ -772,7 +772,10 @@ def test_reaction_delay_returns_old_view():
         delayed = env.observe()
         k = len(views) - 1
         expect = views[max(k - 2, 0)]
-        assert torch.equal(delayed[0], expect[0]) and torch.equal(delayed[1], expect[1])
+        a, b = env.pending_off, env.self_dim         # pending actions are current, the rest is delayed
+        assert torch.equal(delayed[0], expect[0])
+        assert torch.equal(delayed[1][..., :a], expect[1][..., :a])
+        assert torch.equal(delayed[1][..., b:], expect[1][..., b:])
         act(env, S_, S_)
 
 
@@ -884,3 +887,49 @@ def test_v_formation_spawn():
     for k in range(7):                                                  # everyone starts in their own zone
         y, x = env.spawn_pos[k].tolist()
         assert int(env.zone_grid[y, x]) == 0
+
+
+def test_bot_action_delay():
+    env = make(reaction_delay=2)
+    seen = []
+    for k in range(5):
+        a = torch.full((env.N, env.A), (k % 2) + 1, dtype=torch.long)    # 1,2,1,2,1
+        seen.append(env.delay_actions(a)[0, 0].item())
+        act(env, S_, S_)
+    assert seen == [0, 0, 1, 0, 0]      # 2 steps late; the 2nd and 3rd turns were blocked while
+                                        # the 1st was still pending (no stacking blind turns)
+
+
+def test_bot_action_delay_restarts_with_round():
+    env = make(reaction_delay=2, max_time_s=0.3)
+    for k in range(3):
+        env.delay_actions(torch.ones((env.N, env.A), dtype=torch.long))
+        info = act(env, S_, S_)
+    env.reset_done(info["done"])
+    assert env.delay_actions(torch.full((env.N, env.A), 2, dtype=torch.long))[0, 0].item() == 0
+
+
+def test_policy_sees_its_own_pending_actions():
+    env = make(reaction_delay=2)
+    blank(env)
+    env.place(0, 0, 50, 50, UP)
+    env.place(0, 1, 100, 30, LEFT)
+    off = env.pending_off
+    _, vec = env.observe()
+    assert vec[0, 0, off:off + 6].tolist() == [1, 0, 0, 1, 0, 0]           # nothing pressed: straight x2
+    act(env, L_, S_)
+    _, vec = env.observe()
+    assert vec[0, 0, off:off + 6].tolist() == [0, 1, 0, 1, 0, 0]           # most recent first: left
+    act(env, R_, S_)
+    _, vec = env.observe()
+    assert vec[0, 0, off:off + 6].tolist() == [0, 0, 1, 0, 1, 0]           # right, then left
+
+
+def test_bots_do_not_stack_blind_turns():
+    env = make(reaction_delay=2)
+    out = []
+    for k in range(6):                                   # a bot that wants to turn left every step
+        out.append(env.delay_actions(torch.full((env.N, env.A), L_, dtype=torch.long))[0, 0].item())
+        act(env, S_, S_)
+    # straight during the delay, then one left, then it waits until that turn has played out
+    assert out == [0, 0, L_, 0, 0, L_]

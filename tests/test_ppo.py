@@ -55,7 +55,7 @@ def test_shaping_signs():
         "progress": torch.tensor([[0.0, 0.1]]), "progress_before": torch.zeros(1, 2),   # team 0 conquering team 1's zone
         "died": torch.tensor([[False, True]]),                                          # team 1's cycle died
     }
-    rc = RewardConfig(conquest=1.0, kill=0.1, death=0.1)
+    rc = RewardConfig(conquest=1.0, kill=0.1, death=0.1, death_anneal=True)
     r, _ = compute_rewards(info, torch.tensor([0, 1]), T, rc, scale=1.0)
     assert r[0, 0].item() > 0 and r[0, 1].item() < 0
     assert abs(r[0, 0].item() - (0.1 + 0.1)) < 1e-6
@@ -116,3 +116,16 @@ def test_split_mask_per_env_matches_single_calls():
     plain = heuristic_actions(env, split_roles=False, noise=0.0)
     split = heuristic_actions(env, split_roles=True, noise=0.0)
     assert torch.equal(mixed[~mask], plain[~mask]) and torch.equal(mixed[mask], split[mask])
+
+
+def test_death_penalty_is_permanent_by_default():
+    info = {
+        "done": torch.tensor([False]), "winner": torch.tensor([-1]),
+        "progress": torch.zeros(1, 2), "progress_before": torch.zeros(1, 2),
+        "died": torch.tensor([[True, False]]),
+    }
+    rc = RewardConfig(conquest=0.0, kill=0.0)
+    r, parts = compute_rewards(info, torch.tensor([0, 1]), 1, rc, scale=0.0)   # shaping fully annealed
+    assert parts["death"][0, 0].item() == -rc.death and rc.death == 0.5
+    r, parts = compute_rewards(info, torch.tensor([0, 1]), 1, RewardConfig(death_anneal=True), scale=0.0)
+    assert parts["death"][0, 0].item() == 0.0

@@ -10,7 +10,8 @@ split       the positions from the Armagetron wiki's Fortress page: slot 1 cente
             2-3 attackers (via the flanks), 4-5 sweepers (support in your own half),
             6-7 defenders (stay in your own zone). A hand-coded "coordinated" team.
 
-Both scripted bots read the game state directly (no reaction delay).
+Both scripted bots read the game state directly; play.py and the trainer delay their actions
+by the same reaction_delay as the policy's observations (env.delay_actions).
 """
 import torch
 
@@ -84,9 +85,15 @@ def heuristic_actions(env, split_roles=False, gen=None, noise=0.5):
     align = torch.stack([tf, -tr, tr], dim=-1)                       # straight, left, right
     far = (dist > 0.6 * env.cfg.zone_radius).float().unsqueeze(-1)
 
-    score = rays.clamp(max=10.0) + 3.0 * align * far * (rays >= 2).float()
+    # plan ahead for the reaction delay: a move decided now happens reaction_delay decisions
+    # later, so any direction with less free space than (delay + 1) decisions of travel at the
+    # current speed is dangerous
+    from .config import SPEED_UNIT
+    cells_per_step = env.speed.float() / SPEED_UNIT * env.cfg.ticks_per_step          # (N, A)
+    margin = ((env.cfg.reaction_delay + 1) * cells_per_step).unsqueeze(-1)
+    score = rays.clamp(max=10.0) + 3.0 * align * far * (rays >= margin + 1).float()
     score[..., 0] += 0.3                                              # mild preference for straight
-    score = score - 100.0 * (rays == 0).float()
+    score = score - 100.0 * (rays == 0).float() - 50.0 * (rays < margin).float()
     if noise > 0:
         score = score + noise * torch.rand(score.shape, device=dev, generator=gen)
     return score.argmax(-1)

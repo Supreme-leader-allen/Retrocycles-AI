@@ -162,7 +162,9 @@ class FortressEnv:
         self.blast_off = torch.tensor(blast, dtype=torch.long, device=dev)
 
         # self features (+ own slot one-hot if agent_id_obs), then the other agents
-        self.self_dim = SELF_FEATURES + (self.T if cfg.agent_id_obs else 0)
+        self.n_pending = cfg.reaction_delay if cfg.pending_actions_obs else 0
+        self.pending_off = SELF_FEATURES + (self.T if cfg.agent_id_obs else 0)
+        self.self_dim = self.pending_off + 3 * self.n_pending
         self.vec_dim = self.self_dim + (A - 1) * OTHER_FEATURES
         self.ray_len = S
 
@@ -202,6 +204,9 @@ class FortressEnv:
         L = cfg.reaction_delay + 1
         self.hist_codes = torch.zeros((L, N, A, self.K, self.K), dtype=torch.uint8, device=dev)
         self.hist_vec = torch.zeros((L, N, A, self.vec_dim), dtype=torch.float32, device=dev)
+        self._action_hist = {}   # per-key ring buffers for delay_actions()
+        # the policy's own last actions, most recent first (not yet visible in its delayed view)
+        self.recent_actions = torch.zeros((max(1, self.n_pending), N, A), dtype=torch.long, device=dev)
         self.reset_done(torch.ones(N, dtype=torch.bool, device=dev))
 
     # =====================================================================
@@ -245,6 +250,7 @@ class FortressEnv:
         self.breach_passes[idx] = 0
         self.breach_enemy_passes[idx] = 0
         self.last_turn[idx] = -10_000
+        self.recent_actions[:, idx] = 0
         self.turns_blocked[idx] = 0
         lin = pos[:, :, 0] * G + pos[:, :, 1]                                   # (m, A)
         flat = (idx[:, None] * G * G + lin).reshape(-1)
@@ -260,6 +266,9 @@ class FortressEnv:
         progress_before = self.progress.clone()
         cause_before = self.death_cause.clone()
 
+        if self.n_pending:
+            self.recent_actions = torch.roll(self.recent_actions, 1, dims=0)
+            self.recent_actions[0] = actions.long()
         turn = torch.tensor([0, -1, 1], device=self.device)[actions.long()]
         if cfg.turn_cooldown > 0:
             allowed = (self.steps.unsqueeze(1) - self.last_turn) > cfg.turn_cooldown
@@ -488,6 +497,28 @@ class FortressEnv:
         rgt = dy * r[..., 0] + dx * r[..., 1]
         return fwd, rgt
 
+    def delay_actions(self, actions, key="bot"):
+        """Humanlike reaction delay for controllers that read the game state directly
+        (scripted bots): the action decided now is carried out ``reaction_delay`` decisions
+        later; until then (start of a round) cycles go straight. Call once per step per key."""
+        d = self.cfg.reaction_delay
+        if d == 0:
+            return actions
+        L = d + 1
+        buf = self._action_hist.get(key)
+        if buf is None:
+            buf = self._action_hist[key] = torch.zeros((L, self.N, self.A), dtype=torch.long,
+                                                       device=self.device)
+        n = torch.arange(self.N, device=self.device)
+        # a turn decided in the last d steps hasn't happened yet: don't stack another one on it
+        pending = torch.zeros_like(actions, dtype=torch.bool)
+        for k in range(1, d + 1):
+            past = buf[(self.steps - k) % L, n]
+            pending |= (past != 0) & (self.steps >= k).unsqueeze(1)
+        buf[self.steps % L, n] = torch.where(pending, torch.zeros_like(actions), actions.long())
+        out = buf[(self.steps - d).clamp(min=0) % L, n]
+        return torch.where((self.steps >= d).unsqueeze(1), out, torch.zeros_like(out))
+
     def observe(self):
         """
         Observation the policy acts on: the current view from ``reaction_delay`` decisions
@@ -498,6 +529,14 @@ class FortressEnv:
         d = self.cfg.reaction_delay
         if d == 0:
             return codes, vec
+        codes, vec = self._delayed(codes, vec, d)
+        if self.n_pending:
+            oh = torch.nn.functional.one_hot(self.recent_actions[:self.n_pending], 3).float()  # (d, N, A, 3)
+            vec = vec.clone()
+            vec[..., self.pending_off:self.self_dim] = oh.permute(1, 2, 0, 3).reshape(self.N, self.A, -1)
+        return codes, vec
+
+    def _delayed(self, codes, vec, d):
         L = d + 1
         n = torch.arange(self.N, device=self.device)
         slot = self.steps % L
@@ -599,6 +638,8 @@ class FortressEnv:
         if cfg.agent_id_obs:
             slot = torch.nn.functional.one_hot(self.agent_ids % self.T, self.T).float()   # (A, T)
             parts.append(slot.unsqueeze(0).expand(N, A, self.T))
+        if self.n_pending:  # filled in by observe() with the current values
+            parts.append(torch.zeros((N, A, 3 * self.n_pending), device=dev))
         parts.append(others)
         vec = torch.cat(parts, dim=-1)
         return codes, vec
