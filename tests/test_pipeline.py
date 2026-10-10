@@ -87,3 +87,20 @@ def test_pbt_runs_exploits_and_resumes(tmp_path):
     # re-running is a no-op resume (state says generation 2 = finished)
     pbt.main(argv)
     assert len(open(os.path.join(out, "logs", "p_generations.jsonl")).readlines()) == 2
+
+
+def test_policies_with_different_observation_formats_can_play_each_other():
+    """main vs the no_agent_id / no_humanlike ablations in 99_evaluate.sh."""
+    from tron.env import FortressEnv
+    from tron.model import Policy
+    from tron.play import play_rounds, policy_controller
+    cfg_main = FortressConfig(team_size=2)
+    cfg_abl = FortressConfig(team_size=2, agent_id_obs=False, reaction_delay=0)
+    env_main, env_abl = FortressEnv(cfg_main, 1), FortressEnv(cfg_abl, 1)
+    m_main = Policy(env_main.K, env_main.vec_dim)
+    m_abl = Policy(env_abl.K, env_abl.vec_dim)
+    assert env_main.vec_dim != env_abl.vec_dim
+    env = FortressEnv(cfg_main, 4, seed=2)
+    rows = play_rounds(env, policy_controller(m_main, obs_cfg=cfg_main), policy_controller(m_abl, obs_cfg=cfg_abl),
+                       1, names=("main", "abl"))
+    assert len(rows) == 8

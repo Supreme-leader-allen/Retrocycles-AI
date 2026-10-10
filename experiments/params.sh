@@ -48,18 +48,27 @@ fi
 export OUT
 mkdir -p "$OUT/checkpoints" "$OUT/metrics" "$OUT/logs"
 
+# Extra TrainConfig overrides for every run, e.g. for a quick smoke test:
+#   EXTRA_TRAIN="eval_envs=2 eval_rounds=1"
+EXTRA_TRAIN="${EXTRA_TRAIN:-}"
+extra_train() { if [ -n "$EXTRA_TRAIN" ]; then echo --train $EXTRA_TRAIN; fi; }
+
 # train <label> [extra train.py args...]
-# Resumes automatically if the run already has a checkpoint (pod restarted, etc).
+# Resumes automatically if the run already has a checkpoint (pod restarted, etc), and
+# finishes immediately if that checkpoint already reached $SAMPLES.
 train() {
     local label="$1"; shift
     if [ -f "$OUT/checkpoints/$label/latest.pt" ]; then
         echo ">>> $label: checkpoint exists, resuming"
         python train.py --label "$label" --out "$OUT" --samples "$SAMPLES" --resume \
-            --train num_envs="$NUM_ENVS" 2>&1 | tee -a "$OUT/logs/$label.log"
+            --train num_envs="$NUM_ENVS" $(extra_train) 2>&1 | tee -a "$OUT/logs/$label.log"
     else
         python train.py --label "$label" --out "$OUT" --team-size "$TEAM_SIZE" --samples "$SAMPLES" \
-            "$@" 2>&1 | tee -a "$OUT/logs/$label.log"
+            "$@" $(extra_train) 2>&1 | tee -a "$OUT/logs/$label.log"
     fi
 }
+
+# record a failure without stopping the whole experiment
+note_failure() { echo "$(date '+%F %T') $*" | tee -a "$OUT/logs/FAILED.txt"; }
 
 seed_list() { seq 0 $(( SEEDS - 1 )); }

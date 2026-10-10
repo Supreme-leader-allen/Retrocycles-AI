@@ -31,9 +31,9 @@ def main():
     ap.add_argument("--device", default="auto")
     ap.add_argument("--resume", action="store_true")
     ap.add_argument("--init-from", default=None, help="start weights from this checkpoint (fresh optimizer/counters)")
-    ap.add_argument("--game", nargs="*", help="FortressConfig overrides key=value")
-    ap.add_argument("--train", nargs="*", help="TrainConfig overrides key=value")
-    ap.add_argument("--reward", nargs="*", help="RewardConfig overrides key=value")
+    ap.add_argument("--game", nargs="*", action="extend", help="FortressConfig overrides key=value")
+    ap.add_argument("--train", nargs="*", action="extend", help="TrainConfig overrides key=value")
+    ap.add_argument("--reward", nargs="*", action="extend", help="RewardConfig overrides key=value")
     args = ap.parse_args()
 
     device = pick_device(args.device)

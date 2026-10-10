@@ -8,8 +8,11 @@ set -euo pipefail
 source "$(dirname "$0")/params.sh"
 PBT_MEMBERS="${PBT_MEMBERS:-4}"
 PBT_GENERATIONS="${PBT_GENERATIONS:-10}"
+PBT_EVAL_ROUNDS="${PBT_EVAL_ROUNDS:-128}"
+PBT_EVAL_ENVS="${PBT_EVAL_ENVS:-64}"
 for s in $(seed_list); do
     python pbt.py --label "pbt_s$s" --out "$OUT" --team-size "$TEAM_SIZE" --samples "$SAMPLES" \
         --members "$PBT_MEMBERS" --generations "$PBT_GENERATIONS" --seed "$s" \
-        --train num_envs="$NUM_ENVS" 2>&1 | tee -a "$OUT/logs/pbt_s$s.log"
+        --eval-rounds "$PBT_EVAL_ROUNDS" --eval-envs "$PBT_EVAL_ENVS" \
+        --train num_envs="$NUM_ENVS" $(extra_train) 2>&1 | tee -a "$OUT/logs/pbt_s$s.log"
 done

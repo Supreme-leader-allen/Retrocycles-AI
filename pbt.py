@@ -136,9 +136,9 @@ def main(argv=None):
     ap.add_argument("--perturb", type=float, nargs=2, default=(0.8, 1.2))
     ap.add_argument("--device", default="auto")
     ap.add_argument("--seed", type=int, default=0)
-    ap.add_argument("--game", nargs="*")
-    ap.add_argument("--train", nargs="*")
-    ap.add_argument("--reward", nargs="*")
+    ap.add_argument("--game", nargs="*", action="extend")
+    ap.add_argument("--train", nargs="*", action="extend")
+    ap.add_argument("--reward", nargs="*", action="extend")
     args = ap.parse_args(argv)
 
     device = pick_device(args.device)

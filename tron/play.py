@@ -8,6 +8,7 @@ the team it is assigned to are used.
 import torch
 
 from .model import amp
+from .env import ObsView, same_obs
 
 from .bots import random_actions, heuristic_actions
 from .metrics import MetricsTracker
@@ -15,10 +16,20 @@ from .metrics import MetricsTracker
 SCRIPTED = ("random", "heuristic", "split")
 
 
-def policy_controller(model, greedy=False):
+def policy_controller(model, greedy=False, obs_cfg=None):
+    """obs_cfg: the game config the model was trained with. If its observation settings
+    differ from the env's (e.g. an ablation playing main), the model gets observations in
+    its own format through an ObsView instead of the env's."""
+    views = {}
+
     @torch.no_grad()
     def act(env, codes, vec):
         N, A = env.N, env.A
+        if obs_cfg is not None and not same_obs(obs_cfg, env.cfg):
+            view = views.get(id(env))
+            if view is None or view._env is not env:
+                view = views[id(env)] = ObsView(env, obs_cfg)
+            codes, vec = view.observe()
         with amp(env.device):
             logits, _ = model(codes.view(N * A, env.K, env.K), vec.view(N * A, -1))
         if greedy:

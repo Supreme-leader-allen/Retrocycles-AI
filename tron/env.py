@@ -56,6 +56,9 @@ SELF_FEATURES = 17
 OTHER_FEATURES = 11
 
 _DIRS = [[-1, 0], [0, 1], [1, 0], [0, -1]]  # (dy, dx)
+RECENT_KEEP = 4  # own past actions always kept, for any observation format's pending-action inputs
+# settings that change only what a policy SEES, not the game itself
+OBS_FIELDS = ("agent_id_obs", "pending_actions_obs", "reaction_delay", "vis_radius", "obs_radius")
 
 
 def conquest_delta(cfg, att, dfn):
@@ -206,7 +209,7 @@ class FortressEnv:
         self.hist_vec = torch.zeros((L, N, A, self.vec_dim), dtype=torch.float32, device=dev)
         self._action_hist = {}   # per-key ring buffers for delay_actions()
         # the policy's own last actions, most recent first (not yet visible in its delayed view)
-        self.recent_actions = torch.zeros((max(1, self.n_pending), N, A), dtype=torch.long, device=dev)
+        self.recent_actions = torch.zeros((max(RECENT_KEEP, self.n_pending), N, A), dtype=torch.long, device=dev)
         self.reset_done(torch.ones(N, dtype=torch.bool, device=dev))
 
     # =====================================================================
@@ -266,9 +269,8 @@ class FortressEnv:
         progress_before = self.progress.clone()
         cause_before = self.death_cause.clone()
 
-        if self.n_pending:
-            self.recent_actions = torch.roll(self.recent_actions, 1, dims=0)
-            self.recent_actions[0] = actions.long()
+        self.recent_actions = torch.roll(self.recent_actions, 1, dims=0)
+        self.recent_actions[0] = actions.long()
         turn = torch.tensor([0, -1, 1], device=self.device)[actions.long()]
         if cfg.turn_cooldown > 0:
             allowed = (self.steps.unsqueeze(1) - self.last_turn) > cfg.turn_cooldown
@@ -722,3 +724,38 @@ class FortressEnv:
 
     def interior_pos(self, n: int, agent: int):
         return int(self.pos[n, agent, 0]) - self.P, int(self.pos[n, agent, 1]) - self.P
+
+
+def same_obs(cfg_a, cfg_b) -> bool:
+    return all(getattr(cfg_a, f) == getattr(cfg_b, f) for f in OBS_FIELDS)
+
+
+class ObsView:
+    """
+    Observations of a live FortressEnv in a different observation format (another
+    checkpoint's agent_id_obs / pending_actions_obs / reaction_delay / vis_radius).
+    Used when two policies trained with different observation settings play each other,
+    e.g. main vs the no_agent_id ablation: the game is the same, only the inputs differ.
+    Game state is read live from the env; only the delayed-view history is the view's own.
+    Call observe() once every step, like env.observe().
+    """
+
+    def __init__(self, env, cfg):
+        assert cfg.obs_radius == env.cfg.obs_radius, "different crop sizes are not supported"
+        assert cfg.reaction_delay <= RECENT_KEEP
+        object.__setattr__(self, "_env", env)
+        self.cfg = cfg
+        self.n_pending = cfg.reaction_delay if cfg.pending_actions_obs else 0
+        self.pending_off = SELF_FEATURES + (env.T if cfg.agent_id_obs else 0)
+        self.self_dim = self.pending_off + 3 * self.n_pending
+        self.vec_dim = self.self_dim + (env.A - 1) * OTHER_FEATURES
+        L = cfg.reaction_delay + 1
+        self.hist_codes = torch.zeros((L, env.N, env.A, env.K, env.K), dtype=torch.uint8, device=env.device)
+        self.hist_vec = torch.zeros((L, env.N, env.A, self.vec_dim), dtype=torch.float32, device=env.device)
+
+    def __getattr__(self, name):          # everything else: the live env
+        return getattr(self._env, name)
+
+    observe = FortressEnv.observe
+    observe_now = FortressEnv.observe_now
+    _delayed = FortressEnv._delayed

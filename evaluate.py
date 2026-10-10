@@ -29,7 +29,8 @@ def make_controller(spec, device, greedy):
         return scripted_controller(spec), spec, None
     model, ckpt = load_policy(spec, device)
     name = os.path.basename(os.path.dirname(os.path.abspath(spec))) or spec
-    return policy_controller(model, greedy=greedy), name, ckpt
+    obs_cfg = FortressConfig.from_dict(ckpt["game_cfg"])
+    return policy_controller(model, greedy=greedy, obs_cfg=obs_cfg), name, ckpt
 
 
 def main():

@@ -933,3 +933,28 @@ def test_bots_do_not_stack_blind_turns():
         act(env, S_, S_)
     # straight during the delay, then one left, then it waits until that turn has played out
     assert out == [0, 0, L_, 0, 0, L_]
+
+
+# ---------------------------------------------------------------- other observation formats
+@pytest.mark.parametrize("base_kw,view_kw", [
+    (dict(reaction_delay=2, agent_id_obs=True), dict(reaction_delay=2, agent_id_obs=False)),
+    (dict(reaction_delay=2), dict(reaction_delay=0, pending_actions_obs=False)),
+    (dict(reaction_delay=0), dict(reaction_delay=2)),
+    (dict(), dict(vis_radius=15.0)),
+])
+def test_obs_view_matches_an_env_built_with_that_format(base_kw, view_kw):
+    """An ObsView of env A in format B must equal what an env built with format B sees,
+    given identical play (observation settings never change the game itself)."""
+    from tron.env import ObsView
+    torch.manual_seed(0)
+    a = make(team_size=3, n=4, rubber_m=5.0, explosion_radius_m=4.0, **base_kw)
+    b = make(team_size=3, n=4, rubber_m=5.0, explosion_radius_m=4.0, **view_kw)
+    view = ObsView(a, b.cfg)
+    for _ in range(40):
+        ca, va = view.observe()
+        cb, vb = b.observe()
+        assert torch.equal(ca, cb) and torch.allclose(va, vb)
+        acts = torch.randint(0, 3, (4, a.A))
+        ia, ib = a.step(acts), b.step(acts)
+        assert torch.equal(ia["died"], ib["died"])
+        a.reset_done(ia["done"]); b.reset_done(ib["done"])
