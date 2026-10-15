@@ -21,6 +21,7 @@ tron/ppo.py        PPO self-play trainer with opponent pool
 tron/play.py       match play between any two controllers
 train.py           train a run          evaluate.py   matchups -> metrics CSV
 render.py          replay one round as a GIF
+analyze.py         results folder -> paper figures, tables, statistics (analysis/)
 benchmark.py       pick num_envs for a machine
 experiments/       the experiment matrix (same scripts locally and on RunPod)
 pbt.py             population-based training
