@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Final evaluation of every trained condition: vs random, vs heuristic, vs the
-# hand-coded split team, and head-to-head against the main run. All rows go to
+# hand-coded split team, and head-to-head against the main run of the same seed. All rows go to
 # $OUT/metrics/<label>.csv with run_label = <label>. A failed matchup is logged to
 # logs/FAILED.txt and the rest still run. Matchups already evaluated are skipped, so
 # re-running after an interruption only does what's missing.
@@ -18,7 +18,14 @@ for ck in "$OUT"/checkpoints/*/latest.pt; do
     for opp in random heuristic split; do
         evaluate "final_${run}_vs_${opp}" "$ck" "$opp"
     done
-    if [[ "$run" != main_* ]] && [ -f "$OUT/checkpoints/main_s0/latest.pt" ]; then
-        evaluate "final_main_s0_vs_${run}" "$OUT/checkpoints/main_s0/latest.pt" "$ck"
+    # head-to-head against the main run of the SAME seed (no_anneal_s1 vs main_s1, ...), so
+    # replicated conditions are compared run-for-run; falls back to main_s0 if that seed has no main
+    if [[ "$run" != main_* ]]; then
+        seed="${run##*_s}"
+        ref="main_s$seed"
+        [ -f "$OUT/checkpoints/$ref/latest.pt" ] || ref="main_s0"
+        if [ -f "$OUT/checkpoints/$ref/latest.pt" ]; then
+            evaluate "final_${ref}_vs_${run}" "$OUT/checkpoints/$ref/latest.pt" "$ck"
+        fi
     fi
 done
